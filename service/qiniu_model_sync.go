@@ -291,7 +291,7 @@ func loadQiniuBillingOptionsTx(tx *gorm.DB) (map[string]string, map[string]strin
 		qiniuBillingExprOptionKey: &expressions,
 	} {
 		var option model.Option
-		err := tx.Where("key = ?", key).First(&option).Error
+		err := tx.Where(&model.Option{Key: key}).First(&option).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			continue
 		}
