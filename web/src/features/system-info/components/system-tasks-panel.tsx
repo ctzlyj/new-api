@@ -16,9 +16,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ListChecks, RefreshCw } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 
 import { ErrorState } from '@/components/error-state'
 import { Badge } from '@/components/ui/badge'
@@ -33,7 +34,10 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { listSystemTasks } from '@/features/system-settings/api'
+import {
+  listSystemTasks,
+  startQiniuModelSync,
+} from '@/features/system-settings/api'
 import type {
   SystemTask,
   SystemTaskStatus,
@@ -82,6 +86,7 @@ const TYPE_LABEL: Record<string, string> = {
   log_cleanup: 'Log cleanup',
   channel_test: 'Batch channel test',
   model_update: 'Batch upstream model update',
+  qiniu_model_sync: 'Qiniu Model Sync',
   midjourney_poll: 'Drawing task polling',
   async_task_poll: 'Async task polling',
 }
@@ -206,6 +211,7 @@ function SystemTasksTable(props: SystemTasksTableProps) {
 
 export function SystemTasksPanel() {
   const { t } = useTranslation()
+  const queryClient = useQueryClient()
   const tasksQuery = useQuery({
     queryKey: ['system-info', 'system-tasks'],
     queryFn: async () => {
@@ -223,10 +229,42 @@ export function SystemTasksPanel() {
         : false,
   })
 
+  const syncQiniuMutation = useMutation({
+    mutationFn: async () => {
+      const response = await startQiniuModelSync()
+      if (!response.success) {
+        throw new Error(
+          response.message || t('Failed to start Qiniu model synchronization.')
+        )
+      }
+      return response
+    },
+    onSuccess: async (response) => {
+      toast.success(
+        response.created
+          ? t('Qiniu model synchronization started.')
+          : t('Qiniu model synchronization is already running.')
+      )
+      await queryClient.invalidateQueries({
+        queryKey: ['system-info', 'system-tasks'],
+      })
+    },
+    onError: (error) => {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : t('Failed to start Qiniu model synchronization.')
+      )
+    },
+  })
+
   const tasks = tasksQuery.data ?? []
   const loading = tasksQuery.isLoading
   const refreshing = tasksQuery.isFetching && !tasksQuery.isLoading
   const hasActiveTasks = tasks.some((task) => isActiveStatus(task.status))
+  const hasActiveQiniuSync = tasks.some(
+    (task) => task.type === 'qiniu_model_sync' && isActiveStatus(task.status)
+  )
   const activeTasks = tasks.filter((task) => isActiveStatus(task.status))
   const historyTasks = tasks.filter((task) => !isActiveStatus(task.status))
 
@@ -266,6 +304,23 @@ export function SystemTasksPanel() {
                 })
               : t('Live refresh pauses when no task is running')}
           </span>
+          <Button
+            type='button'
+            variant='outline'
+            size='sm'
+            onClick={() => syncQiniuMutation.mutate()}
+            disabled={syncQiniuMutation.isPending || hasActiveQiniuSync}
+          >
+            <RefreshCw
+              data-icon='inline-start'
+              className={cn(
+                'size-3.5',
+                syncQiniuMutation.isPending && 'animate-spin'
+              )}
+              aria-hidden='true'
+            />
+            {t('Sync Qiniu Now')}
+          </Button>
           <Button
             type='button'
             variant='outline'

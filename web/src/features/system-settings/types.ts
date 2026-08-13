@@ -97,6 +97,7 @@ export type LogCleanupTask = SystemTask<
 export type SystemTaskResponse<TTask = SystemTask | null> = {
   success: boolean
   message: string
+  created?: boolean
   data?: TTask
 }
 

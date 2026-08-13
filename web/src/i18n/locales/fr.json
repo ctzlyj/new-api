@@ -5265,6 +5265,11 @@
     "Zero retention": "Aucune rétention",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Qiniu Model Sync": "Synchronisation des mod?les Qiniu",
+    "Sync Qiniu Now": "Synchroniser Qiniu",
+    "Qiniu model synchronization started.": "La synchronisation des mod?les Qiniu a d?marr?.",
+    "Qiniu model synchronization is already running.": "La synchronisation des mod?les Qiniu est d?j? en cours.",
+    "Failed to start Qiniu model synchronization.": "Impossible de d?marrer la synchronisation des mod?les Qiniu."
   }
 }

@@ -83,6 +83,12 @@ export async function listSystemTasks(limit = 20) {
   })
   return res.data
 }
+export async function startQiniuModelSync() {
+  const res = await api.post<SystemTaskResponse>(
+    '/api/system-task/qiniu-model-sync'
+  )
+  return res.data
+}
 
 export async function resetModelRatios() {
   const res = await api.post<UpdateOptionResponse>(

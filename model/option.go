@@ -1,6 +1,7 @@
 package model
 
 import (
+	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -239,39 +240,46 @@ func UpdateOption(key string, value string) error {
 // any DB write fails the whole transaction rolls back and no in-memory state
 // is touched — safe for callers that must commit a set of related options
 // atomically (e.g. payment gateway binding).
-func UpdateOptionsBulk(values map[string]string) error {
-	if len(values) == 0 {
-		return nil
+func UpdateOptionsTx(tx *gorm.DB, values map[string]string) error {
+	if tx == nil {
+		return errors.New("options transaction is nil")
 	}
 	for key, value := range values {
 		if err := validateOptionValue(key, value); err != nil {
 			return err
 		}
-	}
-	err := DB.Transaction(func(tx *gorm.DB) error {
-		for k, v := range values {
-			option := Option{Key: k}
-			if err := tx.FirstOrCreate(&option, Option{Key: k}).Error; err != nil {
-				return err
-			}
-			option.Value = v
-			if err := tx.Save(&option).Error; err != nil {
-				return err
-			}
+		option := Option{Key: key}
+		if err := tx.FirstOrCreate(&option, Option{Key: key}).Error; err != nil {
+			return err
 		}
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	for k, v := range values {
-		if err := updateOptionMap(k, v); err != nil {
+		option.Value = value
+		if err := tx.Save(&option).Error; err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+func ApplyOptionUpdates(values map[string]string) error {
+	for key, value := range values {
+		if err := updateOptionMap(key, value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func UpdateOptionsBulk(values map[string]string) error {
+	if len(values) == 0 {
+		return nil
+	}
+	if err := DB.Transaction(func(tx *gorm.DB) error {
+		return UpdateOptionsTx(tx, values)
+	}); err != nil {
+		return err
+	}
+	return ApplyOptionUpdates(values)
+}
 func updateOptionMap(key string, value string) (err error) {
 	if key == retiredThemeOptionKey {
 		common.OptionMapRWMutex.Lock()

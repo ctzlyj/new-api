@@ -1,0 +1,4 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+COPY new-api /new-api
+RUN chmod 0755 /new-api

@@ -3,6 +3,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -20,6 +22,7 @@ import (
 func RegisterScheduledSystemTasks() {
 	service.RegisterSystemTaskHandler(channelTestHandler{})
 	service.RegisterSystemTaskHandler(modelUpdateHandler{})
+	service.RegisterSystemTaskHandler(qiniuModelSyncHandler{})
 	service.RegisterSystemTaskHandler(midjourneyPollHandler{})
 	service.RegisterSystemTaskHandler(asyncTaskPollHandler{})
 }
@@ -109,6 +112,71 @@ func (modelUpdateHandler) Run(ctx context.Context, task *model.SystemTask, runne
 	}
 	summary := runChannelUpstreamModelUpdateTaskOnce(ctx, payload.Manual, !payload.Manual, service.NewSystemTaskProgressReporter(task, runnerID))
 	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
+}
+
+// qiniuModelSyncHandler refreshes the managed Qiniu catalog through the same
+// leased system-task runner used by the other scheduled maintenance jobs.
+type qiniuModelSyncHandler struct{}
+
+func (qiniuModelSyncHandler) Type() string { return model.SystemTaskTypeQiniuModelSync }
+
+func (qiniuModelSyncHandler) Enabled() bool {
+	return common.GetEnvOrDefaultBool("QINIU_MODEL_SYNC_ENABLED", true)
+}
+
+func (qiniuModelSyncHandler) Interval() time.Duration {
+	hours := common.GetEnvOrDefault("QINIU_MODEL_SYNC_INTERVAL_HOURS", 24)
+	if hours < 1 {
+		hours = 24
+	}
+	return time.Duration(hours) * time.Hour
+}
+
+func (qiniuModelSyncHandler) NewPayload() any { return nil }
+
+func (qiniuModelSyncHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	progress := service.NewSystemTaskProgressReporter(task, runnerID)
+	progress(0, 1)
+	channels, err := model.GetChannelsByTag(qiniuManagedChannelTag(), false, true)
+	if err != nil {
+		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, nil, err)
+		return
+	}
+	if len(channels) != 1 {
+		err = fmt.Errorf("expected one Qiniu managed channel with tag %q, found %d", qiniuManagedChannelTag(), len(channels))
+		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, nil, err)
+		return
+	}
+	synchronizer := service.QiniuModelSynchronizer{
+		Catalog: service.NewQiniuSyncClient(nil, "", ""),
+	}
+	summary, err := synchronizer.Sync(ctx, channels[0], service.QiniuSyncConfig{
+		Markup:     qiniuModelPriceMarkup(),
+		ManagedTag: qiniuManagedChannelTag(),
+	})
+	if err != nil {
+		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, nil, err)
+		return
+	}
+	progress(1, 1)
+	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
+}
+
+func qiniuModelPriceMarkup() float64 {
+	value := common.GetEnvOrDefaultString("QINIU_MODEL_PRICE_MARKUP", "0.05")
+	markup, err := strconv.ParseFloat(value, 64)
+	if err != nil || markup < 0 {
+		return 0.05
+	}
+	return markup
+}
+
+func qiniuManagedChannelTag() string {
+	tag := strings.TrimSpace(common.GetEnvOrDefaultString("QINIU_MANAGED_CHANNEL_TAG", "qiniu-managed"))
+	if tag == "" {
+		return "qiniu-managed"
+	}
+	return tag
 }
 
 // midjourneyPollHandler runs one Midjourney polling pass per scheduled run.
