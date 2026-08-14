@@ -151,7 +151,7 @@ func (qiniuModelSyncHandler) Run(ctx context.Context, task *model.SystemTask, ru
 		Catalog: service.NewQiniuSyncClient(nil, "", ""),
 	}
 	summary, err := synchronizer.Sync(ctx, channels[0], service.QiniuSyncConfig{
-		Markup:     qiniuModelPriceMarkup(),
+		Pricing:    qiniuResourcePackagePricing(),
 		ManagedTag: qiniuManagedChannelTag(),
 	})
 	if err != nil {
@@ -162,13 +162,22 @@ func (qiniuModelSyncHandler) Run(ctx context.Context, task *model.SystemTask, ru
 	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
 }
 
-func qiniuModelPriceMarkup() float64 {
-	value := common.GetEnvOrDefaultString("QINIU_MODEL_PRICE_MARKUP", "0.05")
-	markup, err := strconv.ParseFloat(value, 64)
-	if err != nil || markup < 0 {
-		return 0.05
+func qiniuResourcePackagePricing() service.QiniuResourcePackagePricing {
+	return service.QiniuResourcePackagePricing{
+		CostCNYPer100MTokens:      qiniuPositiveFloatEnv("QINIU_RESOURCE_PACKAGE_COST_CNY_PER_100M", 323),
+		SaleCNYPer100MTokens:      qiniuPositiveFloatEnv("QINIU_RESOURCE_PACKAGE_SALE_CNY_PER_100M", 350),
+		PointsPerCNY:              qiniuPositiveFloatEnv("QINIU_POINTS_PER_CNY", 20),
+		DisplayPointsPerQuotaUnit: operation_setting.GetGeneralSetting().CustomCurrencyExchangeRate,
 	}
-	return markup
+}
+
+func qiniuPositiveFloatEnv(name string, fallback float64) float64 {
+	value := strings.TrimSpace(common.GetEnvOrDefaultString(name, ""))
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
 }
 
 func qiniuManagedChannelTag() string {

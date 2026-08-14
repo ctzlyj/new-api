@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -13,41 +14,70 @@ import (
 	"gorm.io/gorm"
 )
 
+func withQiniuCustomPointRate(t *testing.T, rate float64) {
+	t.Helper()
+	setting := operation_setting.GetGeneralSetting()
+	previous := *setting
+	setting.CustomCurrencyExchangeRate = rate
+	t.Cleanup(func() { *setting = previous })
+}
+
 func TestQiniuModelSyncHandlerDefaults(t *testing.T) {
 	t.Setenv("QINIU_MODEL_SYNC_ENABLED", "true")
 	t.Setenv("QINIU_MODEL_SYNC_INTERVAL_HOURS", "")
-	t.Setenv("QINIU_MODEL_PRICE_MARKUP", "")
+	t.Setenv("QINIU_RESOURCE_PACKAGE_COST_CNY_PER_100M", "")
+	t.Setenv("QINIU_RESOURCE_PACKAGE_SALE_CNY_PER_100M", "")
+	t.Setenv("QINIU_POINTS_PER_CNY", "")
 	t.Setenv("QINIU_MANAGED_CHANNEL_TAG", "")
+	withQiniuCustomPointRate(t, 68)
 
 	handler := qiniuModelSyncHandler{}
+	pricing := qiniuResourcePackagePricing()
 
 	assert.True(t, handler.Enabled())
 	assert.Equal(t, 24*time.Hour, handler.Interval())
 	assert.Equal(t, model.SystemTaskTypeQiniuModelSync, handler.Type())
-	assert.Equal(t, 0.05, qiniuModelPriceMarkup())
+	assert.Equal(t, 323.0, pricing.CostCNYPer100MTokens)
+	assert.Equal(t, 350.0, pricing.SaleCNYPer100MTokens)
+	assert.Equal(t, 20.0, pricing.PointsPerCNY)
+	assert.Equal(t, 68.0, pricing.DisplayPointsPerQuotaUnit)
 	assert.Equal(t, "qiniu-managed", qiniuManagedChannelTag())
 }
 
 func TestQiniuModelSyncHandlerUsesEnvironment(t *testing.T) {
 	t.Setenv("QINIU_MODEL_SYNC_ENABLED", "false")
 	t.Setenv("QINIU_MODEL_SYNC_INTERVAL_HOURS", "12")
-	t.Setenv("QINIU_MODEL_PRICE_MARKUP", "0.08")
+	t.Setenv("QINIU_RESOURCE_PACKAGE_COST_CNY_PER_100M", "324")
+	t.Setenv("QINIU_RESOURCE_PACKAGE_SALE_CNY_PER_100M", "360")
+	t.Setenv("QINIU_POINTS_PER_CNY", "21")
 	t.Setenv("QINIU_MANAGED_CHANNEL_TAG", "custom-qiniu")
+	withQiniuCustomPointRate(t, 72)
 
 	handler := qiniuModelSyncHandler{}
+	pricing := qiniuResourcePackagePricing()
 
 	assert.False(t, handler.Enabled())
 	assert.Equal(t, 12*time.Hour, handler.Interval())
-	assert.Equal(t, 0.08, qiniuModelPriceMarkup())
+	assert.Equal(t, 324.0, pricing.CostCNYPer100MTokens)
+	assert.Equal(t, 360.0, pricing.SaleCNYPer100MTokens)
+	assert.Equal(t, 21.0, pricing.PointsPerCNY)
+	assert.Equal(t, 72.0, pricing.DisplayPointsPerQuotaUnit)
 	assert.Equal(t, "custom-qiniu", qiniuManagedChannelTag())
 }
 
 func TestQiniuModelSyncHandlerRejectsInvalidEnvironment(t *testing.T) {
 	t.Setenv("QINIU_MODEL_SYNC_INTERVAL_HOURS", "0")
-	t.Setenv("QINIU_MODEL_PRICE_MARKUP", "-1")
+	t.Setenv("QINIU_RESOURCE_PACKAGE_COST_CNY_PER_100M", "-1")
+	t.Setenv("QINIU_RESOURCE_PACKAGE_SALE_CNY_PER_100M", "bad")
+	t.Setenv("QINIU_POINTS_PER_CNY", "0")
+	withQiniuCustomPointRate(t, 68)
+
+	pricing := qiniuResourcePackagePricing()
 
 	assert.Equal(t, 24*time.Hour, qiniuModelSyncHandler{}.Interval())
-	assert.Equal(t, 0.05, qiniuModelPriceMarkup())
+	assert.Equal(t, 323.0, pricing.CostCNYPer100MTokens)
+	assert.Equal(t, 350.0, pricing.SaleCNYPer100MTokens)
+	assert.Equal(t, 20.0, pricing.PointsPerCNY)
 }
 
 func setupQiniuSystemTaskControllerDB(t *testing.T) {

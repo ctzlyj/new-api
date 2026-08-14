@@ -55,7 +55,7 @@ func (snapshot QiniuCandidateSnapshot) ActiveModelIDs() []string {
 	return modelIDs
 }
 
-func BuildQiniuCandidateSnapshot(callableIDs []string, marketplaceModels []QiniuMarketplaceModel, markup float64, now time.Time) (QiniuCandidateSnapshot, error) {
+func BuildQiniuCandidateSnapshot(callableIDs []string, marketplaceModels []QiniuMarketplaceModel, pricing QiniuResourcePackagePricing, now time.Time) (QiniuCandidateSnapshot, error) {
 	marketplaceByID := make(map[string]QiniuMarketplaceModel, len(marketplaceModels))
 	for _, marketplaceModel := range marketplaceModels {
 		modelID := strings.TrimSpace(marketplaceModel.ModelID)
@@ -91,7 +91,7 @@ func BuildQiniuCandidateSnapshot(callableIDs []string, marketplaceModels []Qiniu
 			snapshot.Rejected[modelID] = QiniuAdmissionMissingMetadata
 			continue
 		}
-		expression, reason, err := AdmitQiniuModel(marketplaceModel, callable, now, markup)
+		expression, reason, err := AdmitQiniuModel(marketplaceModel, callable, now, pricing)
 		if reason != QiniuAdmissionAccepted {
 			snapshot.Rejected[modelID] = reason
 			continue
@@ -329,7 +329,7 @@ type QiniuCatalog interface {
 }
 
 type QiniuSyncConfig struct {
-	Markup     float64
+	Pricing    QiniuResourcePackagePricing
 	ManagedTag string
 }
 
@@ -364,7 +364,7 @@ func (s QiniuModelSynchronizer) Sync(ctx context.Context, channel *model.Channel
 	if s.Now != nil {
 		now = s.Now()
 	}
-	snapshot, err := BuildQiniuCandidateSnapshot(callableIDs, marketplaceModels, config.Markup, now)
+	snapshot, err := BuildQiniuCandidateSnapshot(callableIDs, marketplaceModels, config.Pricing, now)
 	if err != nil {
 		return QiniuSyncSummary{}, fmt.Errorf("build qiniu candidate snapshot: %w", err)
 	}

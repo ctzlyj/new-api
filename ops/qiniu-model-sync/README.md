@@ -9,7 +9,9 @@ Set these values in `/opt/new-api/deploy/.env`:
 ```dotenv
 QINIU_MODEL_SYNC_ENABLED=true
 QINIU_MODEL_SYNC_INTERVAL_HOURS=24
-QINIU_MODEL_PRICE_MARKUP=0.05
+QINIU_RESOURCE_PACKAGE_COST_CNY_PER_100M=323
+QINIU_RESOURCE_PACKAGE_SALE_CNY_PER_100M=350
+QINIU_POINTS_PER_CNY=20
 QINIU_MANAGED_CHANNEL_TAG=qiniu-managed
 ```
 
@@ -24,6 +26,15 @@ The managed channel must use:
 
 Exactly one channel may have the managed tag. `SF OpenAI Upstream` remains separate and keeps `SF-gpt-image-2` until cutover verification finishes.
 
+Resource-package billing uses Qiniu's official formula:
+
+```text
+deduction ratio = target CNY price per 1K tokens / 0.004 CNY
+points per 1M actual tokens = deduction ratio * 70
+```
+
+The defaults sell 100M deduction tokens for 350 CNY / 7000 points against a 323 CNY package cost, producing a 7.71% gross margin. The synchronizer reads the live custom display rate to convert points into the gateway's internal quota currency.
+
 ## Safety gates
 
 Do not disable any legacy text channel until all gates pass:
@@ -34,7 +45,7 @@ Do not disable any legacy text channel until all gates pass:
 4. The accepted model count is non-zero and plausible.
 5. `SF-gpt-image-2` remains visible and image-capable.
 6. A low-token Qiniu text request succeeds.
-7. The charged quota equals the generated billing expression with the configured 5% markup.
+7. The charged quota equals the official resource-package deduction ratio at 7000 points per 100M deduction tokens.
 8. Image Studio still reads the shared catalog and account quota.
 
 The synchronizer refuses empty callable or accepted snapshots. A fetch, validation, ownership collision, billing smoke-test, or transaction failure preserves the previous snapshot.
@@ -89,7 +100,7 @@ Do not create abilities for an empty channel. The first successful sync creates 
 
 ## Deployment and verification
 
-1. Update `.env` with the four configuration values.
+1. Update `.env` with the six configuration values.
 2. Start the new image with the existing Compose file set.
 3. Check `/api/status` and container health.
 4. Confirm the startup task has type `qiniu_model_sync` and status `succeeded`.
@@ -97,7 +108,7 @@ Do not create abilities for an empty channel. The first successful sync creates 
 6. Confirm retired, non-OpenAI, image, and unpriced Qiniu models are absent.
 7. Run `verify.ps1` without `-RunBillableProbe`.
 8. Record a probe user's quota, run one low-token text request with `-RunBillableProbe`, and record quota again.
-9. Compare the deduction with `billing_setting.billing_expr` for that model, including exactly 5% markup.
+9. Compare the deduction with `billing_setting.billing_expr`: each deduction-ratio unit must cost 70 points per million actual tokens.
 10. Rebuild and restart the Bridge, then verify Image Studio catalog and account views.
 
 ## Cutover

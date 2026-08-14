@@ -24,7 +24,7 @@ func TestBuildQiniuCandidateSnapshotUsesCallablePricedTextIntersection(t *testin
 	snapshot, err := BuildQiniuCandidateSnapshot(
 		[]string{"text-a", "missing-price", "not-public"},
 		[]QiniuMarketplaceModel{priced, missingPrice},
-		0.05,
+		qiniuResourcePackagePricing(70),
 		time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC),
 	)
 
@@ -43,7 +43,7 @@ func TestBuildQiniuCandidateSnapshotSortsModels(t *testing.T) {
 		qiniuPricingModel("a-model", qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{"input": qiniuTokenPrice(0.001)})),
 	}
 
-	snapshot, err := BuildQiniuCandidateSnapshot([]string{"z-model", "a-model"}, models, 0.05, time.Now())
+	snapshot, err := BuildQiniuCandidateSnapshot([]string{"z-model", "a-model"}, models, qiniuResourcePackagePricing(70), time.Now())
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"a-model", "z-model"}, snapshot.ActiveModelIDs())
@@ -52,7 +52,7 @@ func TestBuildQiniuCandidateSnapshotSortsModels(t *testing.T) {
 func TestBuildQiniuCandidateSnapshotRejectsDuplicateMarketplaceIDs(t *testing.T) {
 	marketplaceModel := qiniuPricingModel("duplicate", qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{"input": qiniuTokenPrice(0.001)}))
 
-	_, err := BuildQiniuCandidateSnapshot([]string{"duplicate"}, []QiniuMarketplaceModel{marketplaceModel, marketplaceModel}, 0.05, time.Now())
+	_, err := BuildQiniuCandidateSnapshot([]string{"duplicate"}, []QiniuMarketplaceModel{marketplaceModel, marketplaceModel}, qiniuResourcePackagePricing(70), time.Now())
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "duplicate")
@@ -87,7 +87,7 @@ func TestQiniuModelSynchronizerKeepsSnapshotWhenMarketplaceFetchFails(t *testing
 	}
 	channel := &model.Channel{Key: "test-key", Status: common.ChannelStatusEnabled}
 
-	_, err := synchronizer.Sync(context.Background(), channel, QiniuSyncConfig{Markup: 0.05, ManagedTag: "qiniu-managed"})
+	_, err := synchronizer.Sync(context.Background(), channel, QiniuSyncConfig{Pricing: qiniuResourcePackagePricing(70), ManagedTag: "qiniu-managed"})
 
 	require.Error(t, err)
 	assert.False(t, applied)
@@ -108,7 +108,7 @@ func TestQiniuModelSynchronizerBuildsAndAppliesSnapshot(t *testing.T) {
 	}
 	channel := &model.Channel{Key: "test-key", Status: common.ChannelStatusEnabled}
 
-	summary, err := synchronizer.Sync(context.Background(), channel, QiniuSyncConfig{Markup: 0.05, ManagedTag: "qiniu-managed"})
+	summary, err := synchronizer.Sync(context.Background(), channel, QiniuSyncConfig{Pricing: qiniuResourcePackagePricing(70), ManagedTag: "qiniu-managed"})
 
 	require.NoError(t, err)
 	assert.Equal(t, "test-key", catalog.receivedKey)
@@ -122,7 +122,7 @@ func TestQiniuModelSynchronizerBuildsAndAppliesSnapshot(t *testing.T) {
 
 func TestQiniuModelSynchronizerRejectsEmptyKey(t *testing.T) {
 	synchronizer := QiniuModelSynchronizer{Catalog: &fakeQiniuCatalog{}}
-	_, err := synchronizer.Sync(context.Background(), &model.Channel{Status: common.ChannelStatusEnabled}, QiniuSyncConfig{ManagedTag: "qiniu-managed"})
+	_, err := synchronizer.Sync(context.Background(), &model.Channel{Status: common.ChannelStatusEnabled}, QiniuSyncConfig{Pricing: qiniuResourcePackagePricing(70), ManagedTag: "qiniu-managed"})
 	require.Error(t, err)
 }
 
@@ -137,7 +137,7 @@ func TestQiniuModelSynchronizerRejectsEmptyCandidateWithoutApplying(t *testing.T
 	}
 	channel := &model.Channel{Key: "test-key", Status: common.ChannelStatusEnabled}
 
-	_, err := synchronizer.Sync(context.Background(), channel, QiniuSyncConfig{Markup: 0.05, ManagedTag: "qiniu-managed"})
+	_, err := synchronizer.Sync(context.Background(), channel, QiniuSyncConfig{Pricing: qiniuResourcePackagePricing(70), ManagedTag: "qiniu-managed"})
 
 	require.Error(t, err)
 	assert.False(t, applied)

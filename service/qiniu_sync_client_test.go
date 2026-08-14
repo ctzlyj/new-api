@@ -59,7 +59,7 @@ func TestQiniuSyncClientFetchMarketplaceModels(t *testing.T) {
 
 func TestQiniuSyncClientFetchMarketplaceModelsNormalizesLiveSchema(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, `<script id="__NEXT_DATA__">{"props":{"pageProps":{"models":[{"id":"deepseek/model","architecture":{"input_modalities":["text","image"],"output_modalities":["text"]},"support_api_protocols":["openai"],"retirement_at":"","pricing_rules_v2":[{"input_range":[0,99999999],"output_range":[0,99999999],"details_v2":{"ncache":{"unit_name":"token","unit_size":1000,"unit_price_usd":0.001},"output":{"unit_name":"token","unit_size":1000,"unit_price_usd":0.002}}}]}]}}}</script>`)
+		_, _ = io.WriteString(w, `<script id="__NEXT_DATA__">{"props":{"pageProps":{"models":[{"id":"deepseek/model","architecture":{"input_modalities":["text","image"],"output_modalities":["text"]},"support_api_protocols":["openai"],"retirement_at":"","pricing_rules_v2":[{"input_range":[0,99999999],"output_range":[0,99999999],"details_v2":{"ncache":{"unit_name":"token","unit_size":1000,"unit_price":0.004,"unit_price_usd":0.001},"output":{"unit_name":"token","unit_size":1000,"unit_price":0.008,"unit_price_usd":0.002}}}]}]}}}</script>`)
 	}))
 	defer server.Close()
 
@@ -73,6 +73,7 @@ func TestQiniuSyncClientFetchMarketplaceModelsNormalizesLiveSchema(t *testing.T)
 	assert.Equal(t, []string{"text"}, models[0].OutputModalities)
 	assert.Equal(t, []string{"openai"}, models[0].Protocols)
 	require.Len(t, models[0].PricingRules, 1)
+	assert.Equal(t, 0.004, models[0].PricingRules[0].DetailsV2["ncache"].UnitPriceCNY)
 	assert.Equal(t, 0.001, models[0].PricingRules[0].DetailsV2["ncache"].UnitPriceUSD)
 }
 func TestQiniuSyncClientFetchMarketplaceModelsRejectsMissingData(t *testing.T) {

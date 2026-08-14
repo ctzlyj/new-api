@@ -12,7 +12,43 @@ import (
 	"github.com/QuantumNous/new-api/setting/billing_setting"
 )
 
-const qiniuOpenEndedRange = 99999999
+const (
+	qiniuOpenEndedRange                  = 99999999
+	qiniuBaselineCNYPer1KDeductionTokens = 0.004
+	qiniuMinimumGrossMargin              = 0.05
+)
+
+type QiniuResourcePackagePricing struct {
+	CostCNYPer100MTokens      float64
+	SaleCNYPer100MTokens      float64
+	PointsPerCNY              float64
+	DisplayPointsPerQuotaUnit float64
+}
+
+func (pricing QiniuResourcePackagePricing) validate() error {
+	values := map[string]float64{
+		"cost per 100M tokens":          pricing.CostCNYPer100MTokens,
+		"sale price per 100M tokens":    pricing.SaleCNYPer100MTokens,
+		"points per CNY":                pricing.PointsPerCNY,
+		"display points per quota unit": pricing.DisplayPointsPerQuotaUnit,
+	}
+	for name, value := range values {
+		if value <= 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+			return fmt.Errorf("qiniu resource package %s is invalid", name)
+		}
+	}
+	grossMargin := (pricing.SaleCNYPer100MTokens - pricing.CostCNYPer100MTokens) / pricing.SaleCNYPer100MTokens
+	if grossMargin < qiniuMinimumGrossMargin {
+		return fmt.Errorf("qiniu resource package gross margin %.4f is below %.4f", grossMargin, qiniuMinimumGrossMargin)
+	}
+	return nil
+}
+
+func (pricing QiniuResourcePackagePricing) coefficientPerDeductionRatio() float64 {
+	pointsPer100MTokens := pricing.SaleCNYPer100MTokens * pricing.PointsPerCNY
+	pointsPer1MTokens := pointsPer100MTokens / 100
+	return pointsPer1MTokens / pricing.DisplayPointsPerQuotaUnit
+}
 
 type QiniuAdmissionReason string
 
@@ -35,7 +71,7 @@ type qiniuValidatedRule struct {
 	cost      string
 }
 
-func AdmitQiniuModel(model QiniuMarketplaceModel, callable map[string]struct{}, now time.Time, markup float64) (string, QiniuAdmissionReason, error) {
+func AdmitQiniuModel(model QiniuMarketplaceModel, callable map[string]struct{}, now time.Time, pricing QiniuResourcePackagePricing) (string, QiniuAdmissionReason, error) {
 	if _, ok := callable[model.ModelID]; !ok {
 		return "", QiniuAdmissionNotCallable, nil
 	}
@@ -57,24 +93,24 @@ func AdmitQiniuModel(model QiniuMarketplaceModel, callable map[string]struct{}, 
 	if len(model.PricingRules) == 0 {
 		return "", QiniuAdmissionMissingPrice, nil
 	}
-	expr, err := BuildQiniuBillingExpr(model, markup)
+	expr, err := BuildQiniuBillingExpr(model, pricing)
 	if err != nil {
 		return "", QiniuAdmissionInvalidPricing, err
 	}
 	return expr, QiniuAdmissionAccepted, nil
 }
 
-func BuildQiniuBillingExpr(model QiniuMarketplaceModel, markup float64) (string, error) {
+func BuildQiniuBillingExpr(model QiniuMarketplaceModel, pricing QiniuResourcePackagePricing) (string, error) {
 	if len(model.PricingRules) == 0 {
 		return "", errors.New("qiniu pricing rules are empty")
 	}
-	if math.IsNaN(markup) || math.IsInf(markup, 0) || markup < 0 {
-		return "", errors.New("qiniu price markup is invalid")
+	if err := pricing.validate(); err != nil {
+		return "", err
 	}
 
 	rules := make([]qiniuValidatedRule, 0, len(model.PricingRules))
 	for index, rule := range model.PricingRules {
-		validated, err := validateQiniuPricingRule(rule, markup)
+		validated, err := validateQiniuPricingRule(rule, pricing)
 		if err != nil {
 			return "", fmt.Errorf("qiniu pricing rule %d: %w", index, err)
 		}
@@ -112,7 +148,7 @@ func BuildQiniuBillingExpr(model QiniuMarketplaceModel, markup float64) (string,
 	return expression, nil
 }
 
-func validateQiniuPricingRule(rule QiniuPricingRule, markup float64) (qiniuValidatedRule, error) {
+func validateQiniuPricingRule(rule QiniuPricingRule, pricing QiniuResourcePackagePricing) (qiniuValidatedRule, error) {
 	if len(rule.InputRange) != 2 || len(rule.OutputRange) != 2 {
 		return qiniuValidatedRule{}, errors.New("input and output ranges must contain two values")
 	}
@@ -149,10 +185,12 @@ func validateQiniuPricingRule(rule QiniuPricingRule, markup float64) (qiniuValid
 		if !strings.EqualFold(price.UnitName, "token") || price.UnitSize <= 0 || math.IsNaN(price.UnitSize) || math.IsInf(price.UnitSize, 0) {
 			return qiniuValidatedRule{}, fmt.Errorf("meter %q has unsupported unit", meter)
 		}
-		if price.UnitPriceUSD < 0 || math.IsNaN(price.UnitPriceUSD) || math.IsInf(price.UnitPriceUSD, 0) {
-			return qiniuValidatedRule{}, fmt.Errorf("meter %q has invalid USD price", meter)
+		if price.UnitPriceCNY < 0 || math.IsNaN(price.UnitPriceCNY) || math.IsInf(price.UnitPriceCNY, 0) {
+			return qiniuValidatedRule{}, fmt.Errorf("meter %q has invalid CNY price", meter)
 		}
-		coefficient := price.UnitPriceUSD * (1_000_000 / price.UnitSize) * (1 + markup)
+		priceCNYPer1KTokens := price.UnitPriceCNY * (1_000 / price.UnitSize)
+		deductionRatio := priceCNYPer1KTokens / qiniuBaselineCNYPer1KDeductionTokens
+		coefficient := deductionRatio * pricing.coefficientPerDeductionRatio()
 		if _, exists := variablePrices[variable]; exists {
 			return qiniuValidatedRule{}, fmt.Errorf("multiple meters map to billing variable %q", variable)
 		}

@@ -8,8 +8,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func qiniuTokenPrice(unitPriceUSD float64) QiniuPrice {
-	return QiniuPrice{UnitName: "token", UnitSize: 1000, UnitPriceUSD: unitPriceUSD}
+func qiniuTokenPrice(unitPriceCNY float64) QiniuPrice {
+	return QiniuPrice{UnitName: "token", UnitSize: 1000, UnitPriceCNY: unitPriceCNY}
+}
+
+func qiniuResourcePackagePricing(displayPointsPerQuotaUnit float64) QiniuResourcePackagePricing {
+	return QiniuResourcePackagePricing{
+		CostCNYPer100MTokens:      323,
+		SaleCNYPer100MTokens:      350,
+		PointsPerCNY:              20,
+		DisplayPointsPerQuotaUnit: displayPointsPerQuotaUnit,
+	}
 }
 
 func qiniuPricingModel(modelID string, rules ...QiniuPricingRule) QiniuMarketplaceModel {
@@ -35,10 +44,10 @@ func TestBuildQiniuBillingExprFlatInputOutput(t *testing.T) {
 		"output": qiniuTokenPrice(0.008),
 	}))
 
-	expr, err := BuildQiniuBillingExpr(model, 0.05)
+	expr, err := BuildQiniuBillingExpr(model, qiniuResourcePackagePricing(70))
 
 	require.NoError(t, err)
-	assert.Equal(t, `v1:tier("qiniu_0", p * 2.1 + c * 8.4)`, expr)
+	assert.Equal(t, `v1:tier("qiniu_0", p * 0.5 + c * 2)`, expr)
 }
 
 func TestBuildQiniuBillingExprCacheAndNonCache(t *testing.T) {
@@ -48,10 +57,10 @@ func TestBuildQiniuBillingExprCacheAndNonCache(t *testing.T) {
 		"output": qiniuTokenPrice(0.010),
 	}))
 
-	expr, err := BuildQiniuBillingExpr(model, 0.05)
+	expr, err := BuildQiniuBillingExpr(model, qiniuResourcePackagePricing(70))
 
 	require.NoError(t, err)
-	assert.Equal(t, `v1:tier("qiniu_0", p * 4.2 + c * 10.5 + cr * 1.05)`, expr)
+	assert.Equal(t, `v1:tier("qiniu_0", p * 1 + c * 2.5 + cr * 0.25)`, expr)
 }
 
 func TestBuildQiniuBillingExprInputAndOutputTiers(t *testing.T) {
@@ -61,12 +70,12 @@ func TestBuildQiniuBillingExprInputAndOutputTiers(t *testing.T) {
 		qiniuRule(32000, 99999999, 0, 99999999, map[string]QiniuPrice{"input": qiniuTokenPrice(0.002), "output": qiniuTokenPrice(0.010)}),
 	)
 
-	expr, err := BuildQiniuBillingExpr(model, 0.05)
+	expr, err := BuildQiniuBillingExpr(model, qiniuResourcePackagePricing(70))
 
 	require.NoError(t, err)
 	assert.Contains(t, expr, "len < 32000")
 	assert.Contains(t, expr, "c < 200")
-	assert.Contains(t, expr, `tier("qiniu_2", p * 2.1 + c * 10.5)`)
+	assert.Contains(t, expr, `tier("qiniu_2", p * 0.5 + c * 2.5)`)
 }
 
 func TestBuildQiniuBillingExprAllowsFreeModel(t *testing.T) {
@@ -75,7 +84,7 @@ func TestBuildQiniuBillingExprAllowsFreeModel(t *testing.T) {
 		"output": qiniuTokenPrice(0),
 	}))
 
-	expr, err := BuildQiniuBillingExpr(model, 0.05)
+	expr, err := BuildQiniuBillingExpr(model, qiniuResourcePackagePricing(70))
 
 	require.NoError(t, err)
 	assert.Equal(t, `v1:tier("qiniu_0", p * 0 + c * 0)`, expr)
@@ -87,11 +96,11 @@ func TestBuildQiniuBillingExprAllowsFiniteContextDomain(t *testing.T) {
 		qiniuRule(32000, 256000, 0, 99999999, map[string]QiniuPrice{"input": qiniuTokenPrice(0.002)}),
 	)
 
-	expr, err := BuildQiniuBillingExpr(model, 0.05)
+	expr, err := BuildQiniuBillingExpr(model, qiniuResourcePackagePricing(70))
 
 	require.NoError(t, err)
 	assert.Contains(t, expr, "len < 32000")
-	assert.Contains(t, expr, `tier("qiniu_1", p * 2.1)`)
+	assert.Contains(t, expr, `tier("qiniu_1", p * 0.5)`)
 }
 
 func TestBuildQiniuBillingExprIgnoresNonRealtimeAlternativePrices(t *testing.T) {
@@ -105,24 +114,48 @@ func TestBuildQiniuBillingExprIgnoresNonRealtimeAlternativePrices(t *testing.T) 
 		"c_cache":   qiniuTokenPrice(0.006),
 	}))
 
-	expr, err := BuildQiniuBillingExpr(model, 0.05)
+	expr, err := BuildQiniuBillingExpr(model, qiniuResourcePackagePricing(70))
 
 	require.NoError(t, err)
-	assert.Equal(t, `v1:tier("qiniu_0", p * 4.2 + c * 10.5 + cr * 1.05)`, expr)
+	assert.Equal(t, `v1:tier("qiniu_0", p * 1 + c * 2.5 + cr * 0.25)`, expr)
 }
+func TestBuildQiniuBillingExprConvertsPointsToInternalQuotaCurrency(t *testing.T) {
+	model := qiniuPricingModel("baseline", qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{
+		"input": qiniuTokenPrice(0.004),
+	}))
+
+	expr, err := BuildQiniuBillingExpr(model, qiniuResourcePackagePricing(68))
+
+	require.NoError(t, err)
+	assert.Equal(t, `v1:tier("qiniu_0", p * 1.0294117647058822)`, expr)
+}
+
+func TestBuildQiniuBillingExprRejectsGrossMarginBelowFivePercent(t *testing.T) {
+	model := qiniuPricingModel("unsafe-margin", qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{
+		"input": qiniuTokenPrice(0.004),
+	}))
+	pricing := qiniuResourcePackagePricing(68)
+	pricing.SaleCNYPer100MTokens = 339
+
+	_, err := BuildQiniuBillingExpr(model, pricing)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "gross margin")
+}
+
 func TestBuildQiniuBillingExprRejectsUnsupportedUnitsAndMeters(t *testing.T) {
 	t.Run("unit", func(t *testing.T) {
 		model := qiniuPricingModel("seconds", qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{
-			"input": {UnitName: "second", UnitSize: 1, UnitPriceUSD: 1},
+			"input": {UnitName: "second", UnitSize: 1, UnitPriceCNY: 1},
 		}))
-		_, err := BuildQiniuBillingExpr(model, 0.05)
+		_, err := BuildQiniuBillingExpr(model, qiniuResourcePackagePricing(70))
 		require.Error(t, err)
 	})
 	t.Run("meter", func(t *testing.T) {
 		model := qiniuPricingModel("media", qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{
-			"req": {UnitName: "request", UnitSize: 1, UnitPriceUSD: 1},
+			"req": {UnitName: "request", UnitSize: 1, UnitPriceCNY: 1},
 		}))
-		_, err := BuildQiniuBillingExpr(model, 0.05)
+		_, err := BuildQiniuBillingExpr(model, qiniuResourcePackagePricing(70))
 		require.Error(t, err)
 	})
 }
@@ -132,7 +165,7 @@ func TestBuildQiniuBillingExprRejectsRangeGap(t *testing.T) {
 		qiniuRule(0, 32000, 0, 99999999, map[string]QiniuPrice{"input": qiniuTokenPrice(0.001)}),
 		qiniuRule(64000, 99999999, 0, 99999999, map[string]QiniuPrice{"input": qiniuTokenPrice(0.002)}),
 	)
-	_, err := BuildQiniuBillingExpr(model, 0.05)
+	_, err := BuildQiniuBillingExpr(model, qiniuResourcePackagePricing(70))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "gap")
 }
@@ -160,7 +193,7 @@ func TestAdmitQiniuModel(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, reason, _ := AdmitQiniuModel(test.model, callable, now, 0.05)
+			_, reason, _ := AdmitQiniuModel(test.model, callable, now, qiniuResourcePackagePricing(70))
 			assert.Equal(t, test.reason, reason)
 		})
 	}

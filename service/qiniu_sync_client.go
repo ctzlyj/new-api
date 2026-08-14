@@ -32,6 +32,7 @@ type QiniuSyncClient struct {
 type QiniuPrice struct {
 	UnitName     string  `json:"unit_name"`
 	UnitSize     float64 `json:"unit_size"`
+	UnitPriceCNY float64 `json:"unit_price"`
 	UnitPriceUSD float64 `json:"unit_price_usd"`
 	Name         string  `json:"name"`
 }
