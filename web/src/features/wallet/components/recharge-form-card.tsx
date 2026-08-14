@@ -136,6 +136,13 @@ export function RechargeFormCard({
     enableWaffoTopup ||
     enableWaffoPancakeTopup
   const hasAnyTopup = hasConfigurableTopup || enableCreemTopup
+  const purchaseCodesOnly = !hasAnyTopup && !!topupLink
+  const cardTitle = purchaseCodesOnly
+    ? t('Buy point redemption codes')
+    : t('Add Funds')
+  const cardDescription = purchaseCodesOnly
+    ? t('Purchase a redemption code and redeem it below')
+    : t('Choose an amount and payment method')
   const hasStandardPaymentMethods =
     Array.isArray(topupInfo?.pay_methods) && topupInfo.pay_methods.length > 0
   const hasWaffoPaymentMethods =
@@ -196,8 +203,8 @@ export function RechargeFormCard({
 
   return (
     <TitledCard
-      title={t('Add Funds')}
-      description={t('Choose an amount and payment method')}
+      title={cardTitle}
+      description={cardDescription}
       icon={<WalletCards className='h-4 w-4' />}
       iconTone='success'
       disableHoverEffect
@@ -480,8 +487,24 @@ export function RechargeFormCard({
       ) : (
         <Alert>
           <AlertDescription>
-            {t(
-              'Online topup is not enabled. Please use redemption code or contact administrator.'
+            {topupLink ? (
+              <Button
+                className='w-full gap-2 sm:w-auto'
+                render={
+                  <a
+                    href={topupLink}
+                    target='_blank'
+                    rel='noopener noreferrer'
+                  />
+                }
+              >
+                {t('Buy point redemption codes')}
+                <ExternalLink className='h-4 w-4' />
+              </Button>
+            ) : (
+              t(
+                'Online topup is not enabled. Please use redemption code or contact administrator.'
+              )
             )}
           </AlertDescription>
         </Alert>
