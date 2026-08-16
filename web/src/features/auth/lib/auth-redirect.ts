@@ -43,6 +43,10 @@ export function getSavedLanguage(user: AuthUser): string | undefined {
   }
 }
 
+export function createAuthRedirectNavigation(href: string) {
+  return { href, reloadDocument: true as const, replace: true as const }
+}
+
 export function sanitizeAuthRedirect(
   value: unknown,
   origin: string

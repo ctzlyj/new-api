@@ -21,11 +21,26 @@ import { describe, test } from 'node:test'
 
 import type { AuthUser } from '@/stores/auth-store'
 
-import { getSavedLanguage, sanitizeAuthRedirect } from './auth-redirect'
+import {
+  createAuthRedirectNavigation,
+  getSavedLanguage,
+  sanitizeAuthRedirect,
+} from './auth-redirect'
 
 const origin = 'https://dashboard.example.com'
 
 describe('authentication redirect validation', () => {
+  test('forces a document reload for authenticated redirects', () => {
+    assert.deepEqual(
+      createAuthRedirectNavigation('/image-sso/authorize?state=state-value'),
+      {
+        href: '/image-sso/authorize?state=state-value',
+        reloadDocument: true,
+        replace: true,
+      }
+    )
+  })
+
   test('preserves safe internal paths, search parameters, and fragments', () => {
     assert.equal(
       sanitizeAuthRedirect('/console?tab=usage#recent', origin),

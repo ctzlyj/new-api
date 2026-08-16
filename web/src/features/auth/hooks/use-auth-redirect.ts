@@ -20,6 +20,7 @@ import { useNavigate } from '@tanstack/react-router'
 import i18n from 'i18next'
 
 import {
+  createAuthRedirectNavigation,
   getSavedLanguage,
   sanitizeAuthRedirect,
 } from '@/features/auth/lib/auth-redirect'
@@ -49,7 +50,7 @@ export function useAuthRedirect() {
 
     const targetPath =
       sanitizeAuthRedirect(redirectTo, window.location.origin) ?? '/dashboard'
-    navigate({ href: targetPath, replace: true })
+    navigate(createAuthRedirectNavigation(targetPath))
   }
 
   /**
