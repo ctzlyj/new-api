@@ -63,6 +63,39 @@ func TestBuildQiniuBillingExprCacheAndNonCache(t *testing.T) {
 	assert.Equal(t, `v1:tier("qiniu_0", p * 1 + c * 2.5 + cr * 0.25)`, expr)
 }
 
+func TestBuildQiniuBillingExprPeakOffpeak(t *testing.T) {
+	t.Run("uses peak prices", func(t *testing.T) {
+		model := qiniuPricingModel("deepseek/deepseek-v4-flash-20260731", qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{
+			"cache_offpeak":  qiniuTokenPrice(0.00005),
+			"cache_peak":     qiniuTokenPrice(0.0001),
+			"ncache_offpeak": qiniuTokenPrice(0.0015),
+			"ncache_peak":    qiniuTokenPrice(0.003),
+			"output_offpeak": qiniuTokenPrice(0.0045),
+			"output_peak":    qiniuTokenPrice(0.009),
+		}))
+		callable := map[string]struct{}{model.ModelID: {}}
+
+		expr, reason, err := AdmitQiniuModel(model, callable, time.Date(2026, 8, 19, 0, 0, 0, 0, time.UTC), qiniuResourcePackagePricing(70))
+
+		require.NoError(t, err)
+		assert.Equal(t, QiniuAdmissionAccepted, reason)
+		assert.Equal(t, `v1:tier("qiniu_0", p * 0.75 + c * 2.25 + cr * 0.025)`, expr)
+	})
+
+	t.Run("rejects an offpeak meter without its peak counterpart", func(t *testing.T) {
+		model := qiniuPricingModel("incomplete-peak-pricing", qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{
+			"ncache_peak":    qiniuTokenPrice(0.003),
+			"ncache_offpeak": qiniuTokenPrice(0.0015),
+			"output_offpeak": qiniuTokenPrice(0.0045),
+		}))
+
+		_, err := BuildQiniuBillingExpr(model, qiniuResourcePackagePricing(70))
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `meter "output_offpeak" is missing peak counterpart "output_peak"`)
+	})
+}
+
 func TestBuildQiniuBillingExprInputAndOutputTiers(t *testing.T) {
 	model := qiniuPricingModel("tiered",
 		qiniuRule(0, 32000, 0, 200, map[string]QiniuPrice{"input": qiniuTokenPrice(0.001), "output": qiniuTokenPrice(0.002)}),

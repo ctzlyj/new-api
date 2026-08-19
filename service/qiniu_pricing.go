@@ -173,8 +173,20 @@ func validateQiniuPricingRule(rule QiniuPricingRule, pricing QiniuResourcePackag
 		return qiniuValidatedRule{}, errors.New("pricing details are empty")
 	}
 
+	normalizedMeters := make(map[string]struct{}, len(rule.DetailsV2))
+	for meter := range rule.DetailsV2 {
+		normalizedMeters[strings.ToLower(strings.TrimSpace(meter))] = struct{}{}
+	}
+
 	variablePrices := make(map[string]float64, len(rule.DetailsV2))
 	for meter, price := range rule.DetailsV2 {
+		normalizedMeter := strings.ToLower(strings.TrimSpace(meter))
+		if strings.HasSuffix(normalizedMeter, "_offpeak") && qiniuIgnoredPricingMeter(normalizedMeter) {
+			peakMeter := strings.TrimSuffix(normalizedMeter, "_offpeak") + "_peak"
+			if _, exists := normalizedMeters[peakMeter]; !exists {
+				return qiniuValidatedRule{}, fmt.Errorf("meter %q is missing peak counterpart %q", meter, peakMeter)
+			}
+		}
 		if qiniuIgnoredPricingMeter(meter) {
 			continue
 		}
@@ -287,7 +299,9 @@ func qiniuRuleCondition(rule qiniuValidatedRule) string {
 }
 
 func qiniuBillingVariable(meter string) (string, bool) {
-	switch strings.ToLower(strings.TrimSpace(meter)) {
+	normalizedMeter := strings.ToLower(strings.TrimSpace(meter))
+	normalizedMeter = strings.TrimSuffix(normalizedMeter, "_peak")
+	switch normalizedMeter {
 	case "input", "ncache":
 		return "p", true
 	case "output":
@@ -301,7 +315,8 @@ func qiniuBillingVariable(meter string) (string, bool) {
 
 func qiniuIgnoredPricingMeter(meter string) bool {
 	switch strings.ToLower(strings.TrimSpace(meter)) {
-	case "bi_input", "bi_output", "ex_cache", "c_cache":
+	case "bi_input", "bi_output", "ex_cache", "c_cache",
+		"input_offpeak", "ncache_offpeak", "output_offpeak", "cache_offpeak":
 		return true
 	default:
 		return false
