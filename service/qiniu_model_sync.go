@@ -24,6 +24,10 @@ type QiniuManagedModel struct {
 	ID          string
 	Name        string
 	Description string
+	Icon        string
+	Tags        string
+	VendorName  string
+	VendorIcon  string
 	BillingExpr string
 	Endpoints   []constant.EndpointType
 }
@@ -107,11 +111,59 @@ func BuildQiniuCandidateSnapshot(callableIDs []string, marketplaceModels []Qiniu
 			ID:          modelID,
 			Name:        name,
 			Description: strings.TrimSpace(marketplaceModel.Description),
+			Icon:        strings.TrimSpace(marketplaceModel.Avatar),
+			Tags:        buildQiniuModelTags(marketplaceModel, now),
+			VendorName:  strings.TrimSpace(marketplaceModel.Issuer.Name),
+			VendorIcon:  strings.TrimSpace(marketplaceModel.Avatar),
 			BillingExpr: expression,
 			Endpoints:   []constant.EndpointType{constant.EndpointTypeOpenAI},
 		})
 	}
 	return snapshot, nil
+}
+
+func buildQiniuModelTags(marketplaceModel QiniuMarketplaceModel, now time.Time) string {
+	tags := []string{"Qiniu"}
+	tags = append(tags, marketplaceModel.Features...)
+	tags = append(tags, marketplaceModel.HotTags...)
+	modalityLabels := map[string]string{
+		"text":  "文本",
+		"image": "图片",
+		"audio": "音频",
+		"video": "视频",
+		"file":  "文件",
+	}
+	for _, modality := range marketplaceModel.InputModalities {
+		if label := modalityLabels[strings.ToLower(strings.TrimSpace(modality))]; label != "" {
+			tags = append(tags, label+"输入")
+		}
+	}
+	for _, modality := range marketplaceModel.OutputModalities {
+		if label := modalityLabels[strings.ToLower(strings.TrimSpace(modality))]; label != "" {
+			tags = append(tags, label+"输出")
+		}
+	}
+	if marketplaceModel.RetirementAt != "" {
+		if retirementAt, err := parseQiniuRetirementAt(marketplaceModel.RetirementAt); err == nil && !retirementAt.After(now) {
+			tags = append(tags, "供应商已标记退役")
+		}
+	}
+
+	seen := make(map[string]struct{}, len(tags))
+	normalized := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" {
+			continue
+		}
+		key := strings.ToLower(tag)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		normalized = append(normalized, tag)
+	}
+	return strings.Join(normalized, ",")
 }
 
 func ApplyQiniuCandidateSnapshot(ctx context.Context, snapshot QiniuCandidateSnapshot, options QiniuApplyOptions) (QiniuSyncSummary, error) {
@@ -166,11 +218,47 @@ func ApplyQiniuCandidateSnapshot(ctx context.Context, snapshot QiniuCandidateSna
 		}
 
 		now := common.GetTimestamp()
+		vendorIDs := make(map[string]int)
 		for _, managedModel := range snapshot.Models {
 			endpoints, err := common.Marshal(managedModel.Endpoints)
 			if err != nil {
 				return fmt.Errorf("marshal endpoints for %q: %w", managedModel.ID, err)
 			}
+			vendorID := 0
+			if managedModel.VendorName != "" {
+				if cachedVendorID, exists := vendorIDs[managedModel.VendorName]; exists {
+					vendorID = cachedVendorID
+				} else {
+					var vendor model.Vendor
+					err = tx.Where("name = ?", managedModel.VendorName).First(&vendor).Error
+					switch {
+					case errors.Is(err, gorm.ErrRecordNotFound):
+						vendor = model.Vendor{
+							Name:        managedModel.VendorName,
+							Icon:        managedModel.VendorIcon,
+							Status:      1,
+							CreatedTime: now,
+							UpdatedTime: now,
+						}
+						if err := tx.Create(&vendor).Error; err != nil {
+							return err
+						}
+					case err != nil:
+						return err
+					default:
+						updates := map[string]any{"status": 1, "updated_time": now}
+						if managedModel.VendorIcon != "" {
+							updates["icon"] = managedModel.VendorIcon
+						}
+						if err := tx.Model(&model.Vendor{}).Where("id = ?", vendor.Id).Updates(updates).Error; err != nil {
+							return err
+						}
+					}
+					vendorID = vendor.Id
+					vendorIDs[managedModel.VendorName] = vendorID
+				}
+			}
+
 			var existing model.Model
 			err = tx.Where("model_name = ?", managedModel.ID).First(&existing).Error
 			switch {
@@ -178,7 +266,9 @@ func ApplyQiniuCandidateSnapshot(ctx context.Context, snapshot QiniuCandidateSna
 				existing = model.Model{
 					ModelName:    managedModel.ID,
 					Description:  managedModel.Description,
-					Tags:         "Qiniu",
+					Icon:         managedModel.Icon,
+					Tags:         managedModel.Tags,
+					VendorID:     vendorID,
 					Endpoints:    string(endpoints),
 					Status:       1,
 					SyncOfficial: 0,
@@ -200,7 +290,9 @@ func ApplyQiniuCandidateSnapshot(ctx context.Context, snapshot QiniuCandidateSna
 				}
 				if err := tx.Model(&model.Model{}).Where("id = ?", existing.Id).Updates(map[string]any{
 					"description":   managedModel.Description,
-					"tags":          "Qiniu",
+					"icon":          managedModel.Icon,
+					"tags":          managedModel.Tags,
+					"vendor_id":     vendorID,
 					"endpoints":     string(endpoints),
 					"status":        1,
 					"sync_official": 0,

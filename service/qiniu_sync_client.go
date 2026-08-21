@@ -50,6 +50,12 @@ type QiniuModelArchitecture struct {
 	OutputModalities []string `json:"output_modalities"`
 }
 
+type QiniuIssuer struct {
+	Name      string `json:"name"`
+	Avatar    string `json:"avatar"`
+	ModelPage string `json:"model_page"`
+}
+
 type QiniuMarketplaceModel struct {
 	ModelID            string                 `json:"model_id"`
 	ID                 string                 `json:"id"`
@@ -60,6 +66,10 @@ type QiniuMarketplaceModel struct {
 	OutputModalities   []string               `json:"output_modalities"`
 	Protocols          []string               `json:"protocols"`
 	SupportedProtocols []string               `json:"support_api_protocols"`
+	Avatar             string                 `json:"avatar"`
+	Issuer             QiniuIssuer            `json:"issuer"`
+	Features           []string               `json:"features"`
+	HotTags            []string               `json:"hot_tags"`
 	RetirementAt       string                 `json:"retirement_at"`
 	PricingRules       []QiniuPricingRule     `json:"pricing_rules_v2"`
 }

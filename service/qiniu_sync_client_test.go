@@ -76,6 +76,24 @@ func TestQiniuSyncClientFetchMarketplaceModelsNormalizesLiveSchema(t *testing.T)
 	assert.Equal(t, 0.004, models[0].PricingRules[0].DetailsV2["ncache"].UnitPriceCNY)
 	assert.Equal(t, 0.001, models[0].PricingRules[0].DetailsV2["ncache"].UnitPriceUSD)
 }
+
+func TestQiniuSyncClientFetchMarketplaceModelsReadsCatalogMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "text/html")
+		_, _ = response.Write([]byte(`<script id="__NEXT_DATA__" type="application/json">{"props":{"pageProps":{"models":[{"id":"qwen3-235b-a22b","avatar":"https://static.qiniu.com/ai-inference/model-icons/qwen.png","issuer":{"name":"Aliyun"},"features":["工具调用","深度思考"],"hot_tags":["热门"],"architecture":{"input_modalities":["text","image"],"output_modalities":["text"]},"support_api_protocols":["openai"],"pricing_rules_v2":[]}]}}}</script>`))
+	}))
+	defer server.Close()
+	client := NewQiniuSyncClient(server.Client(), server.URL, server.URL)
+
+	models, err := client.FetchMarketplaceModels(context.Background())
+
+	require.NoError(t, err)
+	require.Len(t, models, 1)
+	assert.Equal(t, "Aliyun", models[0].Issuer.Name)
+	assert.Equal(t, "https://static.qiniu.com/ai-inference/model-icons/qwen.png", models[0].Avatar)
+	assert.Equal(t, []string{"工具调用", "深度思考"}, models[0].Features)
+	assert.Equal(t, []string{"热门"}, models[0].HotTags)
+}
 func TestQiniuSyncClientFetchMarketplaceModelsRejectsMissingData(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `<html><body><script id="__NEXT_DATA__">{"props":{"pageProps":{}}}</script></body></html>`)

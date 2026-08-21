@@ -71,7 +71,7 @@ type qiniuValidatedRule struct {
 	cost      string
 }
 
-func AdmitQiniuModel(model QiniuMarketplaceModel, callable map[string]struct{}, now time.Time, pricing QiniuResourcePackagePricing) (string, QiniuAdmissionReason, error) {
+func AdmitQiniuModel(model QiniuMarketplaceModel, callable map[string]struct{}, _ time.Time, pricing QiniuResourcePackagePricing) (string, QiniuAdmissionReason, error) {
 	if _, ok := callable[model.ModelID]; !ok {
 		return "", QiniuAdmissionNotCallable, nil
 	}
@@ -80,15 +80,6 @@ func AdmitQiniuModel(model QiniuMarketplaceModel, callable map[string]struct{}, 
 	}
 	if !containsFold(model.OutputModalities, "text") {
 		return "", QiniuAdmissionNotTextOutput, nil
-	}
-	if model.RetirementAt != "" {
-		retirementAt, err := parseQiniuRetirementAt(model.RetirementAt)
-		if err != nil {
-			return "", QiniuAdmissionInvalidPricing, fmt.Errorf("model %s has invalid retirement time: %w", model.ModelID, err)
-		}
-		if !retirementAt.After(now) {
-			return "", QiniuAdmissionRetired, nil
-		}
 	}
 	if len(model.PricingRules) == 0 {
 		return "", QiniuAdmissionMissingPrice, nil
@@ -203,8 +194,9 @@ func validateQiniuPricingRule(rule QiniuPricingRule, pricing QiniuResourcePackag
 		priceCNYPer1KTokens := price.UnitPriceCNY * (1_000 / price.UnitSize)
 		deductionRatio := priceCNYPer1KTokens / qiniuBaselineCNYPer1KDeductionTokens
 		coefficient := deductionRatio * pricing.coefficientPerDeductionRatio()
-		if _, exists := variablePrices[variable]; exists {
-			return qiniuValidatedRule{}, fmt.Errorf("multiple meters map to billing variable %q", variable)
+		if existing, exists := variablePrices[variable]; exists {
+			variablePrices[variable] = math.Max(existing, coefficient)
+			continue
 		}
 		variablePrices[variable] = coefficient
 	}
@@ -302,9 +294,9 @@ func qiniuBillingVariable(meter string) (string, bool) {
 	normalizedMeter := strings.ToLower(strings.TrimSpace(meter))
 	normalizedMeter = strings.TrimSuffix(normalizedMeter, "_peak")
 	switch normalizedMeter {
-	case "input", "ncache":
+	case "input", "ncache", "nth_input", "th_input":
 		return "p", true
-	case "output":
+	case "output", "nth_output", "th_output":
 		return "c", true
 	case "cache":
 		return "cr", true

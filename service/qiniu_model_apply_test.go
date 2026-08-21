@@ -19,7 +19,7 @@ func setupQiniuApplyTestDB(t *testing.T) *gorm.DB {
 	previousDB := model.DB
 	database, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(&model.Channel{}, &model.Ability{}, &model.Model{}, &model.Option{}))
+	require.NoError(t, database.AutoMigrate(&model.Channel{}, &model.Ability{}, &model.Model{}, &model.Vendor{}, &model.Option{}))
 	model.DB = database
 	common.OptionMapRWMutex.Lock()
 	previousOptionMap := common.OptionMap
@@ -116,6 +116,28 @@ func TestApplyQiniuCandidateSnapshotReplacesManagedState(t *testing.T) {
 	assert.False(t, oldExists)
 	_, newExists := billing_setting.GetBillingExpr("new-model")
 	assert.True(t, newExists)
+}
+
+func TestApplyQiniuCandidateSnapshotPersistsCatalogMetadata(t *testing.T) {
+	database := setupQiniuApplyTestDB(t)
+	seedQiniuManagedState(t, database)
+	snapshot := qiniuApplySnapshot("qwen3-235b-a22b")
+	snapshot.Models[0].Icon = "https://static.qiniu.com/ai-inference/model-icons/qwen.png"
+	snapshot.Models[0].Tags = "Qiniu,工具调用,深度思考,文本输入,文本输出"
+	snapshot.Models[0].VendorName = "Aliyun"
+	snapshot.Models[0].VendorIcon = snapshot.Models[0].Icon
+
+	_, err := ApplyQiniuCandidateSnapshot(context.Background(), snapshot, QiniuApplyOptions{ManagedTag: "qiniu-managed"})
+
+	require.NoError(t, err)
+	var vendor model.Vendor
+	require.NoError(t, database.Where("name = ?", "Aliyun").First(&vendor).Error)
+	assert.Equal(t, snapshot.Models[0].VendorIcon, vendor.Icon)
+	var catalogModel model.Model
+	require.NoError(t, database.Where("model_name = ?", "qwen3-235b-a22b").First(&catalogModel).Error)
+	assert.Equal(t, snapshot.Models[0].Icon, catalogModel.Icon)
+	assert.Equal(t, snapshot.Models[0].Tags, catalogModel.Tags)
+	assert.Equal(t, vendor.Id, catalogModel.VendorID)
 }
 
 func TestApplyQiniuCandidateSnapshotRollsBackOnOptionFailure(t *testing.T) {

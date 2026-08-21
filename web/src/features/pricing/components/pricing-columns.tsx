@@ -26,7 +26,6 @@ import {
 } from '@/components/data-table'
 import { GroupBadge } from '@/components/group-badge'
 import { StatusBadge } from '@/components/status-badge'
-import { getLobeIcon } from '@/lib/lobe-icon'
 
 import { DEFAULT_TOKEN_UNIT } from '../constants'
 import {
@@ -41,6 +40,7 @@ import {
   stripTrailingZeros,
 } from '../lib/price'
 import type { PricingModel, TokenUnit } from '../types'
+import { CatalogIcon } from './catalog-icon'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
 
 // ----------------------------------------------------------------------------
@@ -80,7 +80,7 @@ export function usePricingColumns(
       cell: ({ row }) => {
         const model = row.original
         const modelIconKey = model.icon || model.vendor_icon
-        const modelIcon = modelIconKey ? getLobeIcon(modelIconKey, 14) : null
+        const modelIcon = <CatalogIcon icon={modelIconKey} size={14} />
 
         return (
           <div className='flex max-w-full min-w-0 items-center gap-2'>
@@ -324,9 +324,7 @@ export function usePricingColumns(
         if (!model.vendor_name) {
           return <span className='text-muted-foreground/50 text-xs'>—</span>
         }
-        const vendorIcon = model.vendor_icon
-          ? getLobeIcon(model.vendor_icon, 12)
-          : null
+        const vendorIcon = <CatalogIcon icon={model.vendor_icon} size={12} />
         return (
           <BadgeCell className='gap-1.5'>
             {vendorIcon}

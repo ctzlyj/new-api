@@ -55,7 +55,6 @@ import {
   formatUptimePct,
   getSuccessRateTextClass,
 } from '@/features/performance-metrics/lib/format'
-import { getLobeIcon } from '@/lib/lobe-icon'
 import { cn } from '@/lib/utils'
 
 import { DEFAULT_TOKEN_UNIT } from '../constants'
@@ -75,6 +74,7 @@ import type {
   PricingModel,
   TokenUnit,
 } from '../types'
+import { CatalogIcon } from './catalog-icon'
 import { DynamicPricingBreakdown } from './dynamic-pricing-breakdown'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
 import { ModelDetailsApi } from './model-details-api'
@@ -527,7 +527,7 @@ function ModelHeader(props: { model: PricingModel }) {
   const { t } = useTranslation()
   const model = props.model
   const modelIconKey = model.icon || model.vendor_icon
-  const modelIcon = modelIconKey ? getLobeIcon(modelIconKey, 20) : null
+  const modelIcon = <CatalogIcon icon={modelIconKey} size={20} />
   const description = model.description || model.vendor_description || null
 
   return (

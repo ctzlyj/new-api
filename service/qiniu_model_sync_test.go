@@ -37,6 +37,33 @@ func TestBuildQiniuCandidateSnapshotUsesCallablePricedTextIntersection(t *testin
 	assert.Equal(t, []constant.EndpointType{constant.EndpointTypeOpenAI}, snapshot.Models[0].Endpoints)
 }
 
+func TestBuildQiniuCandidateSnapshotIncludesCatalogMetadata(t *testing.T) {
+	marketplaceModel := qiniuPricingModel("qwen3-235b-a22b", qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{
+		"nth_input": qiniuTokenPrice(0.002), "th_output": qiniuTokenPrice(0.020),
+	}))
+	marketplaceModel.Avatar = "https://static.qiniu.com/ai-inference/model-icons/qwen.png"
+	marketplaceModel.Issuer = QiniuIssuer{Name: "Aliyun"}
+	marketplaceModel.Features = []string{"工具调用", "深度思考"}
+	marketplaceModel.HotTags = []string{"热门"}
+	marketplaceModel.InputModalities = []string{"text", "image"}
+	marketplaceModel.RetirementAt = "2026-08-01T00:00:00Z"
+
+	snapshot, err := BuildQiniuCandidateSnapshot(
+		[]string{marketplaceModel.ModelID},
+		[]QiniuMarketplaceModel{marketplaceModel},
+		qiniuResourcePackagePricing(70),
+		time.Date(2026, 8, 21, 0, 0, 0, 0, time.UTC),
+	)
+
+	require.NoError(t, err)
+	require.Len(t, snapshot.Models, 1)
+	managedModel := snapshot.Models[0]
+	assert.Equal(t, marketplaceModel.Avatar, managedModel.Icon)
+	assert.Equal(t, "Aliyun", managedModel.VendorName)
+	assert.Equal(t, marketplaceModel.Avatar, managedModel.VendorIcon)
+	assert.Equal(t, "Qiniu,工具调用,深度思考,热门,文本输入,图片输入,文本输出,供应商已标记退役", managedModel.Tags)
+}
+
 func TestBuildQiniuCandidateSnapshotSortsModels(t *testing.T) {
 	models := []QiniuMarketplaceModel{
 		qiniuPricingModel("z-model", qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{"input": qiniuTokenPrice(0.001)})),

@@ -96,6 +96,20 @@ func TestBuildQiniuBillingExprPeakOffpeak(t *testing.T) {
 	})
 }
 
+func TestBuildQiniuBillingExprUsesHigherThinkingPrice(t *testing.T) {
+	model := qiniuPricingModel("qwen3-235b-a22b", qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{
+		"nth_input":  qiniuTokenPrice(0.002),
+		"th_input":   qiniuTokenPrice(0.002),
+		"nth_output": qiniuTokenPrice(0.008),
+		"th_output":  qiniuTokenPrice(0.020),
+	}))
+
+	expr, err := BuildQiniuBillingExpr(model, qiniuResourcePackagePricing(70))
+
+	require.NoError(t, err)
+	assert.Equal(t, `v1:tier("qiniu_0", p * 0.5 + c * 5)`, expr)
+}
+
 func TestBuildQiniuBillingExprInputAndOutputTiers(t *testing.T) {
 	model := qiniuPricingModel("tiered",
 		qiniuRule(0, 32000, 0, 200, map[string]QiniuPrice{"input": qiniuTokenPrice(0.001), "output": qiniuTokenPrice(0.002)}),
@@ -217,11 +231,11 @@ func TestAdmitQiniuModel(t *testing.T) {
 		{name: "not openai", model: QiniuMarketplaceModel{ModelID: "model-a", Protocols: []string{"anthropic"}, OutputModalities: []string{"text"}, PricingRules: []QiniuPricingRule{qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{"input": qiniuTokenPrice(0.001)})}}, reason: QiniuAdmissionNotOpenAI},
 		{name: "image output", model: QiniuMarketplaceModel{ModelID: "model-a", Protocols: []string{"openai"}, OutputModalities: []string{"image"}, PricingRules: []QiniuPricingRule{qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{"input": qiniuTokenPrice(0.001)})}}, reason: QiniuAdmissionNotTextOutput},
 		{name: "missing price", model: QiniuMarketplaceModel{ModelID: "model-a", Protocols: []string{"openai"}, OutputModalities: []string{"text"}}, reason: QiniuAdmissionMissingPrice},
-		{name: "retired", model: func() QiniuMarketplaceModel {
+		{name: "retired but callable", model: func() QiniuMarketplaceModel {
 			model := qiniuPricingModel("model-a", qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{"input": qiniuTokenPrice(0.001)}))
 			model.RetirementAt = "2026-08-01T00:00:00Z"
 			return model
-		}(), reason: QiniuAdmissionRetired},
+		}(), reason: QiniuAdmissionAccepted},
 	}
 
 	for _, test := range tests {
