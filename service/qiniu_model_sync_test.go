@@ -169,3 +169,57 @@ func TestQiniuModelSynchronizerRejectsEmptyCandidateWithoutApplying(t *testing.T
 	require.Error(t, err)
 	assert.False(t, applied)
 }
+
+func TestQiniuModelSynchronizerBuildsPrioritySourceRoutes(t *testing.T) {
+	priced := func(modelID string) QiniuMarketplaceModel {
+		return qiniuPricingModel(modelID, qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{
+			"input": qiniuTokenPrice(0.004),
+		}))
+	}
+	qiniuCatalog := &fakeQiniuCatalog{
+		callable:    []string{"shared", "qiniu-only"},
+		marketplace: []QiniuMarketplaceModel{priced("shared"), priced("qiniu-only")},
+	}
+	modelinkCatalog := &fakeQiniuCatalog{
+		callable: []string{"shared", "modelink-only", "modelink-unpriced"},
+		marketplace: []QiniuMarketplaceModel{
+			priced("shared"),
+			priced("modelink-only"),
+			{ModelID: "modelink-unpriced", Protocols: []string{"openai"}, OutputModalities: []string{"text"}},
+		},
+	}
+	var applied QiniuCandidateSnapshot
+	var options QiniuApplyOptions
+	synchronizer := QiniuModelSynchronizer{
+		Now: func() time.Time { return time.Date(2026, 8, 21, 0, 0, 0, 0, time.UTC) },
+		Apply: func(_ context.Context, snapshot QiniuCandidateSnapshot, applyOptions QiniuApplyOptions) (QiniuSyncSummary, error) {
+			applied = snapshot
+			options = applyOptions
+			return QiniuSyncSummary{}, nil
+		},
+	}
+	sources := []QiniuSyncSource{
+		{Name: "qiniu", SourceTag: "Qiniu", ManagedTag: "qiniu-managed", Channel: &model.Channel{Key: "same-key", Status: common.ChannelStatusEnabled}, Catalog: qiniuCatalog},
+		{Name: "modelink", SourceTag: "Modelink", ManagedTag: "modelink-managed", Channel: &model.Channel{Key: "same-key", Status: common.ChannelStatusEnabled}, Catalog: modelinkCatalog},
+	}
+
+	summary, err := synchronizer.SyncSources(context.Background(), sources, QiniuSyncConfig{Pricing: qiniuResourcePackagePricing(70), ManagedTag: "qiniu-managed"})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"modelink-only", "qiniu-only", "shared"}, applied.ActiveModelIDs())
+	require.Len(t, options.Routes, 2)
+	assert.Equal(t, QiniuChannelRoute{ManagedTag: "qiniu-managed", ModelIDs: []string{"qiniu-only", "shared"}}, options.Routes[0])
+	assert.Equal(t, QiniuChannelRoute{ManagedTag: "modelink-managed", ModelIDs: []string{"modelink-only"}}, options.Routes[1])
+	assert.Equal(t, 4, summary.Callable)
+	assert.Equal(t, 3, summary.Accepted)
+	assert.Equal(t, 1, summary.Hidden)
+	for _, managedModel := range applied.Models {
+		if managedModel.ID == "modelink-only" {
+			assert.Contains(t, managedModel.Tags, "Modelink")
+		}
+		if managedModel.ID == "shared" {
+			assert.Contains(t, managedModel.Tags, "Qiniu")
+			assert.NotContains(t, managedModel.Tags, "Modelink")
+		}
+	}
+}

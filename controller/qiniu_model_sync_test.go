@@ -42,6 +42,7 @@ func TestQiniuModelSyncHandlerDefaults(t *testing.T) {
 	assert.Equal(t, 20.0, pricing.PointsPerCNY)
 	assert.Equal(t, 68.0, pricing.DisplayPointsPerQuotaUnit)
 	assert.Equal(t, "qiniu-managed", qiniuManagedChannelTag())
+	assert.Equal(t, "modelink-managed", modelinkManagedChannelTag())
 }
 
 func TestQiniuModelSyncHandlerUsesEnvironment(t *testing.T) {
@@ -51,6 +52,7 @@ func TestQiniuModelSyncHandlerUsesEnvironment(t *testing.T) {
 	t.Setenv("QINIU_RESOURCE_PACKAGE_SALE_CNY_PER_100M", "360")
 	t.Setenv("QINIU_POINTS_PER_CNY", "21")
 	t.Setenv("QINIU_MANAGED_CHANNEL_TAG", "custom-qiniu")
+	t.Setenv("MODELINK_MANAGED_CHANNEL_TAG", "custom-modelink")
 	withQiniuCustomPointRate(t, 72)
 
 	handler := qiniuModelSyncHandler{}
@@ -63,6 +65,7 @@ func TestQiniuModelSyncHandlerUsesEnvironment(t *testing.T) {
 	assert.Equal(t, 21.0, pricing.PointsPerCNY)
 	assert.Equal(t, 72.0, pricing.DisplayPointsPerQuotaUnit)
 	assert.Equal(t, "custom-qiniu", qiniuManagedChannelTag())
+	assert.Equal(t, "custom-modelink", modelinkManagedChannelTag())
 }
 
 func TestQiniuModelSyncHandlerRejectsInvalidEnvironment(t *testing.T) {
@@ -70,6 +73,7 @@ func TestQiniuModelSyncHandlerRejectsInvalidEnvironment(t *testing.T) {
 	t.Setenv("QINIU_RESOURCE_PACKAGE_COST_CNY_PER_100M", "-1")
 	t.Setenv("QINIU_RESOURCE_PACKAGE_SALE_CNY_PER_100M", "bad")
 	t.Setenv("QINIU_POINTS_PER_CNY", "0")
+	t.Setenv("MODELINK_MANAGED_CHANNEL_TAG", "   ")
 	withQiniuCustomPointRate(t, 68)
 
 	pricing := qiniuResourcePackagePricing()
@@ -78,6 +82,7 @@ func TestQiniuModelSyncHandlerRejectsInvalidEnvironment(t *testing.T) {
 	assert.Equal(t, 323.0, pricing.CostCNYPer100MTokens)
 	assert.Equal(t, 350.0, pricing.SaleCNYPer100MTokens)
 	assert.Equal(t, 20.0, pricing.PointsPerCNY)
+	assert.Equal(t, "modelink-managed", modelinkManagedChannelTag())
 }
 
 func setupQiniuSystemTaskControllerDB(t *testing.T) {

@@ -12,6 +12,69 @@ func qiniuTokenPrice(unitPriceCNY float64) QiniuPrice {
 	return QiniuPrice{UnitName: "token", UnitSize: 1000, UnitPriceCNY: unitPriceCNY}
 }
 
+func TestBuildQiniuBillingExprModelinkMeters(t *testing.T) {
+	model := QiniuMarketplaceModel{
+		ModelID:          "google/gemini-3.1-flash-image",
+		Protocols:        []string{"openai"},
+		OutputModalities: []string{"text", "image"},
+		PricingRules: []QiniuPricingRule{qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{
+			"input":          qiniuTokenPrice(0.004),
+			"t_input":        qiniuTokenPrice(0.006),
+			"output":         qiniuTokenPrice(0.008),
+			"t_output":       qiniuTokenPrice(0.010),
+			"cache":          qiniuTokenPrice(0.001),
+			"ex_cache":       qiniuTokenPrice(0.002),
+			"c_cache":        qiniuTokenPrice(0.005),
+			"c_1h_cache":     qiniuTokenPrice(0.008),
+			"a_input":        qiniuTokenPrice(0.012),
+			"i_output":       qiniuTokenPrice(0.040),
+			"bi_input":       qiniuTokenPrice(0.001),
+			"bi_output":      qiniuTokenPrice(0.002),
+			"web_search_req": {UnitName: "time", UnitSize: 1, UnitPriceCNY: 0.0966},
+		})},
+	}
+
+	expr, reason, err := AdmitQiniuModel(model, map[string]struct{}{model.ModelID: {}}, time.Now(), qiniuResourcePackagePricing(70))
+
+	require.NoError(t, err)
+	assert.Equal(t, QiniuAdmissionAccepted, reason)
+	assert.Equal(t, `v1:tier("qiniu_0", p * 1.5 + c * 2.5 + cr * 0.5 + cc * 1.25 + cc1h * 2 + img_o * 10 + ai * 3)`, expr)
+}
+
+func TestAdmitQiniuModelRequiresPricedImageOutput(t *testing.T) {
+	model := QiniuMarketplaceModel{
+		ModelID:          "image-model",
+		Protocols:        []string{"openai"},
+		OutputModalities: []string{"image"},
+		PricingRules: []QiniuPricingRule{qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{
+			"input": qiniuTokenPrice(0.004),
+		})},
+	}
+
+	_, reason, err := AdmitQiniuModel(model, map[string]struct{}{model.ModelID: {}}, time.Now(), qiniuResourcePackagePricing(70))
+
+	require.NoError(t, err)
+	assert.Equal(t, QiniuAdmissionInvalidPricing, reason)
+}
+
+func TestAdmitQiniuModelAcceptsGenericOutputMeterForImageOnlyModel(t *testing.T) {
+	model := QiniuMarketplaceModel{
+		ModelID:          "gemini-2.5-flash-image",
+		Protocols:        []string{"openai"},
+		OutputModalities: []string{"image"},
+		PricingRules: []QiniuPricingRule{qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{
+			"input":  qiniuTokenPrice(0.004),
+			"output": qiniuTokenPrice(0.040),
+		})},
+	}
+
+	expr, reason, err := AdmitQiniuModel(model, map[string]struct{}{model.ModelID: {}}, time.Now(), qiniuResourcePackagePricing(70))
+
+	require.NoError(t, err)
+	assert.Equal(t, QiniuAdmissionAccepted, reason)
+	assert.Equal(t, `v1:tier("qiniu_0", p * 1 + c * 10)`, expr)
+}
+
 func qiniuResourcePackagePricing(displayPointsPerQuotaUnit float64) QiniuResourcePackagePricing {
 	return QiniuResourcePackagePricing{
 		CostCNYPer100MTokens:      323,
@@ -150,7 +213,7 @@ func TestBuildQiniuBillingExprAllowsFiniteContextDomain(t *testing.T) {
 	assert.Contains(t, expr, `tier("qiniu_1", p * 0.5)`)
 }
 
-func TestBuildQiniuBillingExprIgnoresNonRealtimeAlternativePrices(t *testing.T) {
+func TestBuildQiniuBillingExprSupportsRealtimeCachePrices(t *testing.T) {
 	model := qiniuPricingModel("alternatives", qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{
 		"ncache":    qiniuTokenPrice(0.004),
 		"cache":     qiniuTokenPrice(0.001),
@@ -164,7 +227,7 @@ func TestBuildQiniuBillingExprIgnoresNonRealtimeAlternativePrices(t *testing.T) 
 	expr, err := BuildQiniuBillingExpr(model, qiniuResourcePackagePricing(70))
 
 	require.NoError(t, err)
-	assert.Equal(t, `v1:tier("qiniu_0", p * 1 + c * 2.5 + cr * 0.25)`, expr)
+	assert.Equal(t, `v1:tier("qiniu_0", p * 1 + c * 2.5 + cr * 0.25 + cc * 1.5)`, expr)
 }
 func TestBuildQiniuBillingExprConvertsPointsToInternalQuotaCurrency(t *testing.T) {
 	model := qiniuPricingModel("baseline", qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{
@@ -229,7 +292,8 @@ func TestAdmitQiniuModel(t *testing.T) {
 		{name: "accepted", model: qiniuPricingModel("model-a", qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{"input": qiniuTokenPrice(0.001)})), reason: QiniuAdmissionAccepted},
 		{name: "not callable", model: qiniuPricingModel("model-b", qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{"input": qiniuTokenPrice(0.001)})), reason: QiniuAdmissionNotCallable},
 		{name: "not openai", model: QiniuMarketplaceModel{ModelID: "model-a", Protocols: []string{"anthropic"}, OutputModalities: []string{"text"}, PricingRules: []QiniuPricingRule{qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{"input": qiniuTokenPrice(0.001)})}}, reason: QiniuAdmissionNotOpenAI},
-		{name: "image output", model: QiniuMarketplaceModel{ModelID: "model-a", Protocols: []string{"openai"}, OutputModalities: []string{"image"}, PricingRules: []QiniuPricingRule{qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{"input": qiniuTokenPrice(0.001)})}}, reason: QiniuAdmissionNotTextOutput},
+		{name: "unpriced image output", model: QiniuMarketplaceModel{ModelID: "model-a", Protocols: []string{"openai"}, OutputModalities: []string{"image"}, PricingRules: []QiniuPricingRule{qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{"input": qiniuTokenPrice(0.001)})}}, reason: QiniuAdmissionInvalidPricing},
+		{name: "unsupported video output", model: QiniuMarketplaceModel{ModelID: "model-a", Protocols: []string{"openai"}, OutputModalities: []string{"video"}, PricingRules: []QiniuPricingRule{qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{"input": qiniuTokenPrice(0.001)})}}, reason: QiniuAdmissionNotTextOutput},
 		{name: "missing price", model: QiniuMarketplaceModel{ModelID: "model-a", Protocols: []string{"openai"}, OutputModalities: []string{"text"}}, reason: QiniuAdmissionMissingPrice},
 		{name: "retired but callable", model: func() QiniuMarketplaceModel {
 			model := qiniuPricingModel("model-a", qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{"input": qiniuTokenPrice(0.001)}))

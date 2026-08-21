@@ -27,6 +27,14 @@ func RegisterScheduledSystemTasks() {
 	service.RegisterSystemTaskHandler(asyncTaskPollHandler{})
 }
 
+func modelinkManagedChannelTag() string {
+	tag := strings.TrimSpace(common.GetEnvOrDefaultString("MODELINK_MANAGED_CHANNEL_TAG", "modelink-managed"))
+	if tag == "" {
+		return "modelink-managed"
+	}
+	return tag
+}
+
 // channelTestHandler runs the scheduled "test all channels" job. Enablement and
 // cadence still come from the monitor settings; only the execution path moved
 // into the system task runner.
@@ -137,20 +145,43 @@ func (qiniuModelSyncHandler) NewPayload() any { return nil }
 func (qiniuModelSyncHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
 	progress := service.NewSystemTaskProgressReporter(task, runnerID)
 	progress(0, 1)
-	channels, err := model.GetChannelsByTag(qiniuManagedChannelTag(), false, true)
+	qiniuChannels, err := model.GetChannelsByTag(qiniuManagedChannelTag(), false, true)
 	if err != nil {
 		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, nil, err)
 		return
 	}
-	if len(channels) != 1 {
-		err = fmt.Errorf("expected one Qiniu managed channel with tag %q, found %d", qiniuManagedChannelTag(), len(channels))
+	if len(qiniuChannels) != 1 {
+		err = fmt.Errorf("expected one Qiniu managed channel with tag %q, found %d", qiniuManagedChannelTag(), len(qiniuChannels))
 		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, nil, err)
 		return
 	}
-	synchronizer := service.QiniuModelSynchronizer{
-		Catalog: service.NewQiniuSyncClient(nil, "", ""),
+	modelinkChannels, err := model.GetChannelsByTag(modelinkManagedChannelTag(), false, true)
+	if err != nil {
+		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, nil, err)
+		return
 	}
-	summary, err := synchronizer.Sync(ctx, channels[0], service.QiniuSyncConfig{
+	if len(modelinkChannels) != 1 {
+		err = fmt.Errorf("expected one Modelink managed channel with tag %q, found %d", modelinkManagedChannelTag(), len(modelinkChannels))
+		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, nil, err)
+		return
+	}
+	synchronizer := service.QiniuModelSynchronizer{}
+	summary, err := synchronizer.SyncSources(ctx, []service.QiniuSyncSource{
+		{
+			Name:       "Qiniu",
+			SourceTag:  "Qiniu",
+			ManagedTag: qiniuManagedChannelTag(),
+			Channel:    qiniuChannels[0],
+			Catalog:    service.NewQiniuSyncClient(nil, "", ""),
+		},
+		{
+			Name:       "Modelink",
+			SourceTag:  "Modelink",
+			ManagedTag: modelinkManagedChannelTag(),
+			Channel:    modelinkChannels[0],
+			Catalog:    service.NewModelinkSyncClient(nil, "", ""),
+		},
+	}, service.QiniuSyncConfig{
 		Pricing:    qiniuResourcePackagePricing(),
 		ManagedTag: qiniuManagedChannelTag(),
 	})

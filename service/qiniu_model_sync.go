@@ -49,6 +49,12 @@ type QiniuSyncSummary struct {
 
 type QiniuApplyOptions struct {
 	ManagedTag string
+	Routes     []QiniuChannelRoute
+}
+
+type QiniuChannelRoute struct {
+	ManagedTag string
+	ModelIDs   []string
 }
 
 func (snapshot QiniuCandidateSnapshot) ActiveModelIDs() []string {
@@ -60,6 +66,10 @@ func (snapshot QiniuCandidateSnapshot) ActiveModelIDs() []string {
 }
 
 func BuildQiniuCandidateSnapshot(callableIDs []string, marketplaceModels []QiniuMarketplaceModel, pricing QiniuResourcePackagePricing, now time.Time) (QiniuCandidateSnapshot, error) {
+	return buildQiniuCandidateSnapshot(callableIDs, marketplaceModels, pricing, now, "Qiniu")
+}
+
+func buildQiniuCandidateSnapshot(callableIDs []string, marketplaceModels []QiniuMarketplaceModel, pricing QiniuResourcePackagePricing, now time.Time, sourceTag string) (QiniuCandidateSnapshot, error) {
 	marketplaceByID := make(map[string]QiniuMarketplaceModel, len(marketplaceModels))
 	for _, marketplaceModel := range marketplaceModels {
 		modelID := strings.TrimSpace(marketplaceModel.ModelID)
@@ -112,7 +122,7 @@ func BuildQiniuCandidateSnapshot(callableIDs []string, marketplaceModels []Qiniu
 			Name:        name,
 			Description: strings.TrimSpace(marketplaceModel.Description),
 			Icon:        strings.TrimSpace(marketplaceModel.Avatar),
-			Tags:        buildQiniuModelTags(marketplaceModel, now),
+			Tags:        buildQiniuModelTags(marketplaceModel, now, sourceTag),
 			VendorName:  strings.TrimSpace(marketplaceModel.Issuer.Name),
 			VendorIcon:  strings.TrimSpace(marketplaceModel.Avatar),
 			BillingExpr: expression,
@@ -122,8 +132,8 @@ func BuildQiniuCandidateSnapshot(callableIDs []string, marketplaceModels []Qiniu
 	return snapshot, nil
 }
 
-func buildQiniuModelTags(marketplaceModel QiniuMarketplaceModel, now time.Time) string {
-	tags := []string{"Qiniu"}
+func buildQiniuModelTags(marketplaceModel QiniuMarketplaceModel, now time.Time, sourceTag string) string {
+	tags := []string{sourceTag}
 	tags = append(tags, marketplaceModel.Features...)
 	tags = append(tags, marketplaceModel.HotTags...)
 	modalityLabels := map[string]string{
@@ -186,35 +196,74 @@ func ApplyQiniuCandidateSnapshot(ctx context.Context, snapshot QiniuCandidateSna
 			return QiniuSyncSummary{}, fmt.Errorf("qiniu model %q billing expression is invalid: %w", managedModel.ID, err)
 		}
 	}
+	activeSet := make(map[string]struct{}, len(activeIDs))
+	for _, modelID := range activeIDs {
+		activeSet[modelID] = struct{}{}
+	}
+	routes := options.Routes
+	if len(routes) == 0 {
+		routes = []QiniuChannelRoute{{ManagedTag: managedTag, ModelIDs: activeIDs}}
+	}
+	routeTags := make(map[string]struct{}, len(routes))
+	routedIDs := make(map[string]struct{}, len(activeIDs))
+	for index := range routes {
+		routes[index].ManagedTag = strings.TrimSpace(routes[index].ManagedTag)
+		if routes[index].ManagedTag == "" {
+			return QiniuSyncSummary{}, errors.New("qiniu route channel tag is empty")
+		}
+		if _, exists := routeTags[routes[index].ManagedTag]; exists {
+			return QiniuSyncSummary{}, fmt.Errorf("duplicate qiniu route channel tag %q", routes[index].ManagedTag)
+		}
+		routeTags[routes[index].ManagedTag] = struct{}{}
+		if !sort.StringsAreSorted(routes[index].ModelIDs) {
+			return QiniuSyncSummary{}, fmt.Errorf("qiniu route %q models are not sorted", routes[index].ManagedTag)
+		}
+		for _, modelID := range routes[index].ModelIDs {
+			if _, exists := activeSet[modelID]; !exists {
+				return QiniuSyncSummary{}, fmt.Errorf("qiniu route %q contains inactive model %q", routes[index].ManagedTag, modelID)
+			}
+			if _, exists := routedIDs[modelID]; exists {
+				return QiniuSyncSummary{}, fmt.Errorf("qiniu model %q has duplicate routes", modelID)
+			}
+			routedIDs[modelID] = struct{}{}
+		}
+	}
+	if len(routedIDs) != len(activeIDs) {
+		return QiniuSyncSummary{}, errors.New("qiniu routes do not cover the active snapshot")
+	}
 
-	var channel model.Channel
+	channels := make([]model.Channel, len(routes))
 	var previousActiveIDs []string
 	var optionValues map[string]string
 	err := model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var channels []model.Channel
-		if err := tx.Where("tag = ?", managedTag).Limit(2).Find(&channels).Error; err != nil {
-			return err
+		for index, route := range routes {
+			var matched []model.Channel
+			if err := tx.Where("tag = ?", route.ManagedTag).Limit(2).Find(&matched).Error; err != nil {
+				return err
+			}
+			if len(matched) != 1 {
+				return fmt.Errorf("expected one qiniu managed channel with tag %q, found %d", route.ManagedTag, len(matched))
+			}
+			channels[index] = matched[0]
+			if channels[index].Status != common.ChannelStatusEnabled {
+				return fmt.Errorf("qiniu managed channel %q is disabled", route.ManagedTag)
+			}
+			previousActiveIDs = append(previousActiveIDs, splitQiniuModelIDs(channels[index].Models)...)
 		}
-		if len(channels) != 1 {
-			return fmt.Errorf("expected one qiniu managed channel with tag %q, found %d", managedTag, len(channels))
-		}
-		channel = channels[0]
-		if channel.Status != common.ChannelStatusEnabled {
-			return errors.New("qiniu managed channel is disabled")
-		}
-		previousActiveIDs = splitQiniuModelIDs(channel.Models)
 
 		var previouslyManagedIDs []string
 		if err := tx.Model(&model.Model{}).Where("managed_by = ?", managedTag).Pluck("model_name", &previouslyManagedIDs).Error; err != nil {
 			return err
 		}
 
-		channel.Models = strings.Join(activeIDs, ",")
-		if err := tx.Model(&model.Channel{}).Where("id = ?", channel.Id).Update("models", channel.Models).Error; err != nil {
-			return err
-		}
-		if err := channel.UpdateAbilities(tx); err != nil {
-			return err
+		for index, route := range routes {
+			channels[index].Models = strings.Join(route.ModelIDs, ",")
+			if err := tx.Model(&model.Channel{}).Where("id = ?", channels[index].Id).Update("models", channels[index].Models).Error; err != nil {
+				return err
+			}
+			if err := channels[index].UpdateAbilities(tx); err != nil {
+				return err
+			}
 		}
 
 		now := common.GetTimestamp()
@@ -348,16 +397,14 @@ func ApplyQiniuCandidateSnapshot(ctx context.Context, snapshot QiniuCandidateSna
 	if err := model.ApplyOptionUpdates(optionValues); err != nil {
 		return QiniuSyncSummary{}, fmt.Errorf("reload qiniu billing options: %w", err)
 	}
-	model.CacheUpdateChannel(&channel)
+	for index := range channels {
+		model.CacheUpdateChannel(&channels[index])
+	}
 	model.InvalidatePricingCache()
 
 	previousSet := make(map[string]struct{}, len(previousActiveIDs))
 	for _, modelID := range previousActiveIDs {
 		previousSet[modelID] = struct{}{}
-	}
-	activeSet := make(map[string]struct{}, len(activeIDs))
-	for _, modelID := range activeIDs {
-		activeSet[modelID] = struct{}{}
 	}
 	summary := QiniuSyncSummary{Accepted: len(activeIDs), Hidden: len(snapshot.Rejected)}
 	for modelID := range activeSet {
@@ -420,6 +467,14 @@ type QiniuCatalog interface {
 	FetchMarketplaceModels(context.Context) ([]QiniuMarketplaceModel, error)
 }
 
+type QiniuSyncSource struct {
+	Name       string
+	SourceTag  string
+	ManagedTag string
+	Channel    *model.Channel
+	Catalog    QiniuCatalog
+}
+
 type QiniuSyncConfig struct {
 	Pricing    QiniuResourcePackagePricing
 	ManagedTag string
@@ -429,6 +484,98 @@ type QiniuModelSynchronizer struct {
 	Catalog QiniuCatalog
 	Now     func() time.Time
 	Apply   func(context.Context, QiniuCandidateSnapshot, QiniuApplyOptions) (QiniuSyncSummary, error)
+}
+
+func (s QiniuModelSynchronizer) SyncSources(ctx context.Context, sources []QiniuSyncSource, config QiniuSyncConfig) (QiniuSyncSummary, error) {
+	if len(sources) == 0 {
+		return QiniuSyncSummary{}, errors.New("qiniu sync sources are empty")
+	}
+	now := time.Now()
+	if s.Now != nil {
+		now = s.Now()
+	}
+	seenCallable := make(map[string]struct{})
+	combined := QiniuCandidateSnapshot{Rejected: make(map[string]QiniuAdmissionReason)}
+	routes := make([]QiniuChannelRoute, 0, len(sources))
+	publicCount := 0
+	for _, source := range sources {
+		name := strings.TrimSpace(source.Name)
+		if name == "" {
+			name = strings.TrimSpace(source.ManagedTag)
+		}
+		if source.Channel == nil {
+			return QiniuSyncSummary{}, fmt.Errorf("%s managed channel is missing", name)
+		}
+		if source.Channel.Status != common.ChannelStatusEnabled {
+			return QiniuSyncSummary{}, fmt.Errorf("%s managed channel is disabled", name)
+		}
+		if strings.TrimSpace(source.Channel.Key) == "" {
+			return QiniuSyncSummary{}, fmt.Errorf("%s managed channel API key is empty", name)
+		}
+		if source.Catalog == nil {
+			return QiniuSyncSummary{}, fmt.Errorf("%s catalog client is missing", name)
+		}
+		managedTag := strings.TrimSpace(source.ManagedTag)
+		if managedTag == "" {
+			return QiniuSyncSummary{}, fmt.Errorf("%s managed channel tag is empty", name)
+		}
+		callableIDs, err := source.Catalog.FetchCallableModelIDs(ctx, source.Channel.Key)
+		if err != nil {
+			return QiniuSyncSummary{}, fmt.Errorf("fetch %s callable model catalog: %w", name, err)
+		}
+		if len(callableIDs) == 0 {
+			return QiniuSyncSummary{}, fmt.Errorf("refusing empty %s callable model catalog", name)
+		}
+		marketplaceModels, err := source.Catalog.FetchMarketplaceModels(ctx)
+		if err != nil {
+			return QiniuSyncSummary{}, fmt.Errorf("fetch %s marketplace metadata: %w", name, err)
+		}
+		publicCount += len(marketplaceModels)
+		exclusiveIDs := make([]string, 0, len(callableIDs))
+		for _, callableID := range callableIDs {
+			modelID := strings.TrimSpace(callableID)
+			if modelID == "" {
+				continue
+			}
+			if _, exists := seenCallable[modelID]; !exists {
+				exclusiveIDs = append(exclusiveIDs, modelID)
+			}
+			seenCallable[modelID] = struct{}{}
+		}
+		sourceTag := strings.TrimSpace(source.SourceTag)
+		if sourceTag == "" {
+			sourceTag = name
+		}
+		snapshot, err := buildQiniuCandidateSnapshot(exclusiveIDs, marketplaceModels, config.Pricing, now, sourceTag)
+		if err != nil {
+			return QiniuSyncSummary{}, fmt.Errorf("build %s candidate snapshot: %w", name, err)
+		}
+		if len(exclusiveIDs) > 0 && len(snapshot.Models) == 0 {
+			return QiniuSyncSummary{}, fmt.Errorf("refusing empty %s accepted snapshot: callable=%d", name, len(exclusiveIDs))
+		}
+		for modelID, reason := range snapshot.Rejected {
+			combined.Rejected[modelID] = reason
+		}
+		combined.Models = append(combined.Models, snapshot.Models...)
+		routes = append(routes, QiniuChannelRoute{ManagedTag: managedTag, ModelIDs: snapshot.ActiveModelIDs()})
+	}
+	if len(combined.Models) == 0 {
+		return QiniuSyncSummary{}, errors.New("refusing to apply empty combined qiniu snapshot")
+	}
+	sort.Slice(combined.Models, func(i, j int) bool { return combined.Models[i].ID < combined.Models[j].ID })
+	apply := s.Apply
+	if apply == nil {
+		apply = ApplyQiniuCandidateSnapshot
+	}
+	summary, err := apply(ctx, combined, QiniuApplyOptions{ManagedTag: config.ManagedTag, Routes: routes})
+	if err != nil {
+		return QiniuSyncSummary{}, fmt.Errorf("apply combined qiniu snapshot: %w", err)
+	}
+	summary.Callable = len(seenCallable)
+	summary.Public = publicCount
+	summary.Accepted = len(combined.Models)
+	summary.Hidden = len(combined.Rejected)
+	return summary, nil
 }
 
 func (s QiniuModelSynchronizer) Sync(ctx context.Context, channel *model.Channel, config QiniuSyncConfig) (QiniuSyncSummary, error) {

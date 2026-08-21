@@ -194,3 +194,84 @@ func TestApplyQiniuCandidateSnapshotRejectsUnmanagedModelCollision(t *testing.T)
 	assert.Equal(t, "Managed manually", manualModel.Description)
 	assert.Empty(t, manualModel.ManagedBy)
 }
+
+func TestApplyQiniuCandidateSnapshotUpdatesTwoRoutesWithoutTouchingSF(t *testing.T) {
+	database := setupQiniuApplyTestDB(t)
+	qiniuChannel := seedQiniuManagedState(t, database)
+	modelinkTag := "modelink-managed"
+	modelinkChannel := model.Channel{
+		Type: constant.ChannelTypeOpenAI, Key: "test-secret", Status: common.ChannelStatusEnabled,
+		Name: "Modelink Managed", Group: "default", Models: "old-modelink", Tag: &modelinkTag,
+	}
+	require.NoError(t, database.Create(&modelinkChannel).Error)
+	require.NoError(t, modelinkChannel.AddAbilities(database))
+	require.NoError(t, database.Create(&model.Model{ModelName: "old-modelink", Status: 1, ManagedBy: "qiniu-managed"}).Error)
+	sfTag := "sufy-upstream"
+	sfChannel := model.Channel{
+		Type: constant.ChannelTypeOpenAI, Key: "test-secret", Status: common.ChannelStatusEnabled,
+		Name: "SF OpenAI Upstream", Group: "default", Models: "SF-gpt-image-2", Tag: &sfTag,
+	}
+	require.NoError(t, database.Create(&sfChannel).Error)
+	require.NoError(t, sfChannel.AddAbilities(database))
+	modes := billing_setting.GetBillingModeCopy()
+	expressions := billing_setting.GetBillingExprCopy()
+	modes["old-modelink"] = billing_setting.BillingModeTieredExpr
+	expressions["old-modelink"] = `v1:tier("old-modelink", p * 2)`
+	modeJSON, err := common.Marshal(modes)
+	require.NoError(t, err)
+	expressionJSON, err := common.Marshal(expressions)
+	require.NoError(t, err)
+	values := map[string]string{
+		"billing_setting.billing_mode": string(modeJSON),
+		"billing_setting.billing_expr": string(expressionJSON),
+	}
+	require.NoError(t, model.UpdateOptionsTx(database, values))
+	require.NoError(t, model.ApplyOptionUpdates(values))
+	snapshot := QiniuCandidateSnapshot{Models: []QiniuManagedModel{
+		qiniuApplySnapshot("modelink-new").Models[0],
+		qiniuApplySnapshot("qiniu-new").Models[0],
+	}}
+
+	_, err = ApplyQiniuCandidateSnapshot(context.Background(), snapshot, QiniuApplyOptions{
+		ManagedTag: "qiniu-managed",
+		Routes: []QiniuChannelRoute{
+			{ManagedTag: "qiniu-managed", ModelIDs: []string{"qiniu-new"}},
+			{ManagedTag: "modelink-managed", ModelIDs: []string{"modelink-new"}},
+		},
+	})
+
+	require.NoError(t, err)
+	var updatedQiniu model.Channel
+	require.NoError(t, database.First(&updatedQiniu, qiniuChannel.Id).Error)
+	assert.Equal(t, "qiniu-new", updatedQiniu.Models)
+	var updatedModelink model.Channel
+	require.NoError(t, database.First(&updatedModelink, modelinkChannel.Id).Error)
+	assert.Equal(t, "modelink-new", updatedModelink.Models)
+	var updatedSF model.Channel
+	require.NoError(t, database.First(&updatedSF, sfChannel.Id).Error)
+	assert.Equal(t, "SF-gpt-image-2", updatedSF.Models)
+	assert.Equal(t, billing_setting.BillingModeRatio, billing_setting.GetBillingMode("SF-gpt-image-2"))
+	sfExpression, exists := billing_setting.GetBillingExpr("SF-gpt-image-2")
+	require.True(t, exists)
+	assert.Equal(t, `v1:tier("image", p * 1)`, sfExpression)
+}
+
+func TestApplyQiniuCandidateSnapshotRollsBackWhenSecondRouteIsMissing(t *testing.T) {
+	database := setupQiniuApplyTestDB(t)
+	channel := seedQiniuManagedState(t, database)
+
+	_, err := ApplyQiniuCandidateSnapshot(context.Background(), qiniuApplySnapshot("new-model"), QiniuApplyOptions{
+		ManagedTag: "qiniu-managed",
+		Routes: []QiniuChannelRoute{
+			{ManagedTag: "qiniu-managed", ModelIDs: []string{"new-model"}},
+			{ManagedTag: "modelink-managed", ModelIDs: []string{"new-model"}},
+		},
+	})
+
+	require.Error(t, err)
+	var updatedChannel model.Channel
+	require.NoError(t, database.First(&updatedChannel, channel.Id).Error)
+	assert.Equal(t, "old-model", updatedChannel.Models)
+	_, oldExists := billing_setting.GetBillingExpr("old-model")
+	assert.True(t, oldExists)
+}

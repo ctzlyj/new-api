@@ -78,11 +78,17 @@ func AdmitQiniuModel(model QiniuMarketplaceModel, callable map[string]struct{}, 
 	if !containsFold(model.Protocols, "openai") {
 		return "", QiniuAdmissionNotOpenAI, nil
 	}
-	if !containsFold(model.OutputModalities, "text") {
+	if !containsFold(model.OutputModalities, "text") && !containsFold(model.OutputModalities, "image") && !containsFold(model.OutputModalities, "audio") {
 		return "", QiniuAdmissionNotTextOutput, nil
 	}
 	if len(model.PricingRules) == 0 {
 		return "", QiniuAdmissionMissingPrice, nil
+	}
+	if containsFold(model.OutputModalities, "image") && !qiniuModelPricesVariable(model, "img_o") && !qiniuModelPricesVariable(model, "c") {
+		return "", QiniuAdmissionInvalidPricing, nil
+	}
+	if containsFold(model.OutputModalities, "audio") && !qiniuModelPricesVariable(model, "ao") && !qiniuModelPricesVariable(model, "c") {
+		return "", QiniuAdmissionInvalidPricing, nil
 	}
 	expr, err := BuildQiniuBillingExpr(model, pricing)
 	if err != nil {
@@ -201,7 +207,7 @@ func validateQiniuPricingRule(rule QiniuPricingRule, pricing QiniuResourcePackag
 		variablePrices[variable] = coefficient
 	}
 
-	variables := []string{"p", "c", "cr", "cc"}
+	variables := []string{"p", "c", "cr", "cc", "cc1h", "img", "img_o", "ai", "ao"}
 	terms := make([]string, 0, len(variablePrices))
 	for _, variable := range variables {
 		if coefficient, ok := variablePrices[variable]; ok {
@@ -294,12 +300,24 @@ func qiniuBillingVariable(meter string) (string, bool) {
 	normalizedMeter := strings.ToLower(strings.TrimSpace(meter))
 	normalizedMeter = strings.TrimSuffix(normalizedMeter, "_peak")
 	switch normalizedMeter {
-	case "input", "ncache", "nth_input", "th_input":
+	case "input", "ncache", "t_input", "nth_input", "th_input":
 		return "p", true
-	case "output", "nth_output", "th_output":
+	case "output", "t_output", "nth_output", "th_output":
 		return "c", true
-	case "cache":
+	case "cache", "ex_cache":
 		return "cr", true
+	case "c_cache":
+		return "cc", true
+	case "c_1h_cache":
+		return "cc1h", true
+	case "i_input":
+		return "img", true
+	case "i_output":
+		return "img_o", true
+	case "a_input":
+		return "ai", true
+	case "a_output":
+		return "ao", true
 	default:
 		return "", false
 	}
@@ -307,12 +325,24 @@ func qiniuBillingVariable(meter string) (string, bool) {
 
 func qiniuIgnoredPricingMeter(meter string) bool {
 	switch strings.ToLower(strings.TrimSpace(meter)) {
-	case "bi_input", "bi_output", "ex_cache", "c_cache",
+	case "bi_input", "bi_output", "web_search_req",
 		"input_offpeak", "ncache_offpeak", "output_offpeak", "cache_offpeak":
 		return true
 	default:
 		return false
 	}
+}
+
+func qiniuModelPricesVariable(model QiniuMarketplaceModel, target string) bool {
+	for _, rule := range model.PricingRules {
+		for meter := range rule.DetailsV2 {
+			variable, ok := qiniuBillingVariable(meter)
+			if ok && variable == target {
+				return true
+			}
+		}
+	}
+	return false
 }
 func formatQiniuCoefficient(value float64) string {
 	if value == 0 {
