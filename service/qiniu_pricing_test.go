@@ -281,7 +281,7 @@ func TestBuildQiniuBillingExprRejectsRangeGap(t *testing.T) {
 }
 
 func TestAdmitQiniuModel(t *testing.T) {
-	callable := map[string]struct{}{"model-a": {}}
+	callable := map[string]struct{}{"model-a": {}, "openai/gpt-5.2-chat": {}}
 	now := time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
 
 	tests := []struct {
@@ -295,9 +295,15 @@ func TestAdmitQiniuModel(t *testing.T) {
 		{name: "unpriced image output", model: QiniuMarketplaceModel{ModelID: "model-a", Protocols: []string{"openai"}, OutputModalities: []string{"image"}, PricingRules: []QiniuPricingRule{qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{"input": qiniuTokenPrice(0.001)})}}, reason: QiniuAdmissionInvalidPricing},
 		{name: "unsupported video output", model: QiniuMarketplaceModel{ModelID: "model-a", Protocols: []string{"openai"}, OutputModalities: []string{"video"}, PricingRules: []QiniuPricingRule{qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{"input": qiniuTokenPrice(0.001)})}}, reason: QiniuAdmissionNotTextOutput},
 		{name: "missing price", model: QiniuMarketplaceModel{ModelID: "model-a", Protocols: []string{"openai"}, OutputModalities: []string{"text"}}, reason: QiniuAdmissionMissingPrice},
-		{name: "retired but callable", model: func() QiniuMarketplaceModel {
+		{name: "manually disabled", model: qiniuPricingModel("openai/gpt-5.2-chat", qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{"input": qiniuTokenPrice(0.001)})), reason: QiniuAdmissionDisabled},
+		{name: "retired", model: func() QiniuMarketplaceModel {
 			model := qiniuPricingModel("model-a", qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{"input": qiniuTokenPrice(0.001)}))
 			model.RetirementAt = "2026-08-01T00:00:00Z"
+			return model
+		}(), reason: QiniuAdmissionRetired},
+		{name: "future retirement", model: func() QiniuMarketplaceModel {
+			model := qiniuPricingModel("model-a", qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{"input": qiniuTokenPrice(0.001)}))
+			model.RetirementAt = "2026-09-01T00:00:00Z"
 			return model
 		}(), reason: QiniuAdmissionAccepted},
 	}

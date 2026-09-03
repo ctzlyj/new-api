@@ -201,11 +201,11 @@ func TestApplyQiniuCandidateSnapshotUpdatesTwoRoutesWithoutTouchingSF(t *testing
 	modelinkTag := "modelink-managed"
 	modelinkChannel := model.Channel{
 		Type: constant.ChannelTypeOpenAI, Key: "test-secret", Status: common.ChannelStatusEnabled,
-		Name: "Modelink Managed", Group: "default", Models: "old-modelink", Tag: &modelinkTag,
+		Name: "Modelink Managed", Group: "default", Models: "openai/gpt-5.2-chat", Tag: &modelinkTag,
 	}
 	require.NoError(t, database.Create(&modelinkChannel).Error)
 	require.NoError(t, modelinkChannel.AddAbilities(database))
-	require.NoError(t, database.Create(&model.Model{ModelName: "old-modelink", Status: 1, ManagedBy: "qiniu-managed"}).Error)
+	require.NoError(t, database.Create(&model.Model{ModelName: "openai/gpt-5.2-chat", Status: 1, ManagedBy: "qiniu-managed"}).Error)
 	sfTag := "sufy-upstream"
 	sfChannel := model.Channel{
 		Type: constant.ChannelTypeOpenAI, Key: "test-secret", Status: common.ChannelStatusEnabled,
@@ -215,8 +215,8 @@ func TestApplyQiniuCandidateSnapshotUpdatesTwoRoutesWithoutTouchingSF(t *testing
 	require.NoError(t, sfChannel.AddAbilities(database))
 	modes := billing_setting.GetBillingModeCopy()
 	expressions := billing_setting.GetBillingExprCopy()
-	modes["old-modelink"] = billing_setting.BillingModeTieredExpr
-	expressions["old-modelink"] = `v1:tier("old-modelink", p * 2)`
+	modes["openai/gpt-5.2-chat"] = billing_setting.BillingModeTieredExpr
+	expressions["openai/gpt-5.2-chat"] = `v1:tier("gpt-5.2-chat", p * 2)`
 	modeJSON, err := common.Marshal(modes)
 	require.NoError(t, err)
 	expressionJSON, err := common.Marshal(expressions)
@@ -247,6 +247,36 @@ func TestApplyQiniuCandidateSnapshotUpdatesTwoRoutesWithoutTouchingSF(t *testing
 	var updatedModelink model.Channel
 	require.NoError(t, database.First(&updatedModelink, modelinkChannel.Id).Error)
 	assert.Equal(t, "modelink-new", updatedModelink.Models)
+	var qiniuAbilities []model.Ability
+	require.NoError(t, database.Where("channel_id = ?", qiniuChannel.Id).Find(&qiniuAbilities).Error)
+	require.Len(t, qiniuAbilities, 1)
+	assert.Equal(t, "qiniu-new", qiniuAbilities[0].Model)
+	var modelinkAbilities []model.Ability
+	require.NoError(t, database.Where("channel_id = ?", modelinkChannel.Id).Find(&modelinkAbilities).Error)
+	require.Len(t, modelinkAbilities, 1)
+	assert.Equal(t, "modelink-new", modelinkAbilities[0].Model)
+	var oldQiniuModel model.Model
+	require.NoError(t, database.Where("model_name = ?", "old-model").First(&oldQiniuModel).Error)
+	assert.Equal(t, 0, oldQiniuModel.Status)
+	var oldModelinkModel model.Model
+	require.NoError(t, database.Where("model_name = ?", "openai/gpt-5.2-chat").First(&oldModelinkModel).Error)
+	assert.Equal(t, 0, oldModelinkModel.Status)
+	_, oldQiniuModeExists := billing_setting.GetBillingModeCopy()["old-model"]
+	assert.False(t, oldQiniuModeExists)
+	_, oldModelinkModeExists := billing_setting.GetBillingModeCopy()["openai/gpt-5.2-chat"]
+	assert.False(t, oldModelinkModeExists)
+	_, oldQiniuExpressionExists := billing_setting.GetBillingExpr("old-model")
+	assert.False(t, oldQiniuExpressionExists)
+	_, oldModelinkExpressionExists := billing_setting.GetBillingExpr("openai/gpt-5.2-chat")
+	assert.False(t, oldModelinkExpressionExists)
+	pricingModels := make(map[string]struct{})
+	for _, pricing := range model.GetPricing() {
+		pricingModels[pricing.ModelName] = struct{}{}
+	}
+	assert.NotContains(t, pricingModels, "old-model")
+	assert.NotContains(t, pricingModels, "openai/gpt-5.2-chat")
+	assert.Contains(t, pricingModels, "qiniu-new")
+	assert.Contains(t, pricingModels, "modelink-new")
 	var updatedSF model.Channel
 	require.NoError(t, database.First(&updatedSF, sfChannel.Id).Error)
 	assert.Equal(t, "SF-gpt-image-2", updatedSF.Models)

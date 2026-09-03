@@ -46,7 +46,7 @@ func TestBuildQiniuCandidateSnapshotIncludesCatalogMetadata(t *testing.T) {
 	marketplaceModel.Features = []string{"工具调用", "深度思考"}
 	marketplaceModel.HotTags = []string{"热门"}
 	marketplaceModel.InputModalities = []string{"text", "image"}
-	marketplaceModel.RetirementAt = "2026-08-01T00:00:00Z"
+	marketplaceModel.RetirementAt = "2026-09-01T00:00:00Z"
 
 	snapshot, err := BuildQiniuCandidateSnapshot(
 		[]string{marketplaceModel.ModelID},
@@ -61,7 +61,25 @@ func TestBuildQiniuCandidateSnapshotIncludesCatalogMetadata(t *testing.T) {
 	assert.Equal(t, marketplaceModel.Avatar, managedModel.Icon)
 	assert.Equal(t, "Aliyun", managedModel.VendorName)
 	assert.Equal(t, marketplaceModel.Avatar, managedModel.VendorIcon)
-	assert.Equal(t, "Qiniu,工具调用,深度思考,热门,文本输入,图片输入,文本输出,供应商已标记退役", managedModel.Tags)
+	assert.Equal(t, "Qiniu,工具调用,深度思考,热门,文本输入,图片输入,文本输出", managedModel.Tags)
+}
+
+func TestBuildQiniuCandidateSnapshotRejectsRetiredModel(t *testing.T) {
+	marketplaceModel := qiniuPricingModel("retired-model", qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{
+		"input": qiniuTokenPrice(0.001),
+	}))
+	marketplaceModel.RetirementAt = "2026-08-01T00:00:00Z"
+
+	snapshot, err := BuildQiniuCandidateSnapshot(
+		[]string{marketplaceModel.ModelID},
+		[]QiniuMarketplaceModel{marketplaceModel},
+		qiniuResourcePackagePricing(70),
+		time.Date(2026, 8, 21, 0, 0, 0, 0, time.UTC),
+	)
+
+	require.NoError(t, err)
+	assert.Empty(t, snapshot.ActiveModelIDs())
+	assert.Equal(t, QiniuAdmissionRetired, snapshot.Rejected[marketplaceModel.ModelID])
 }
 
 func TestBuildQiniuCandidateSnapshotSortsModels(t *testing.T) {
@@ -222,4 +240,53 @@ func TestQiniuModelSynchronizerBuildsPrioritySourceRoutes(t *testing.T) {
 			assert.NotContains(t, managedModel.Tags, "Modelink")
 		}
 	}
+}
+
+func TestQiniuModelSynchronizerExcludesRetiredModelsFromBothRoutes(t *testing.T) {
+	priced := func(modelID string) QiniuMarketplaceModel {
+		return qiniuPricingModel(modelID, qiniuRule(0, 99999999, 0, 99999999, map[string]QiniuPrice{
+			"input": qiniuTokenPrice(0.004),
+		}))
+	}
+	retired := func(modelID string) QiniuMarketplaceModel {
+		model := priced(modelID)
+		model.RetirementAt = "2026-08-01T00:00:00Z"
+		return model
+	}
+	qiniuCatalog := &fakeQiniuCatalog{
+		callable:    []string{"qiniu-active", "qiniu-retired"},
+		marketplace: []QiniuMarketplaceModel{priced("qiniu-active"), retired("qiniu-retired")},
+	}
+	modelinkCatalog := &fakeQiniuCatalog{
+		callable:    []string{"modelink-active", "modelink-retired", "openai/gpt-5.2-chat"},
+		marketplace: []QiniuMarketplaceModel{priced("modelink-active"), retired("modelink-retired"), priced("openai/gpt-5.2-chat")},
+	}
+	var applied QiniuCandidateSnapshot
+	var options QiniuApplyOptions
+	synchronizer := QiniuModelSynchronizer{
+		Now: func() time.Time { return time.Date(2026, 8, 21, 0, 0, 0, 0, time.UTC) },
+		Apply: func(_ context.Context, snapshot QiniuCandidateSnapshot, applyOptions QiniuApplyOptions) (QiniuSyncSummary, error) {
+			applied = snapshot
+			options = applyOptions
+			return QiniuSyncSummary{}, nil
+		},
+	}
+	sources := []QiniuSyncSource{
+		{Name: "qiniu", SourceTag: "Qiniu", ManagedTag: "qiniu-managed", Channel: &model.Channel{Key: "same-key", Status: common.ChannelStatusEnabled}, Catalog: qiniuCatalog},
+		{Name: "modelink", SourceTag: "Modelink", ManagedTag: "modelink-managed", Channel: &model.Channel{Key: "same-key", Status: common.ChannelStatusEnabled}, Catalog: modelinkCatalog},
+	}
+
+	summary, err := synchronizer.SyncSources(context.Background(), sources, QiniuSyncConfig{Pricing: qiniuResourcePackagePricing(70), ManagedTag: "qiniu-managed"})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"modelink-active", "qiniu-active"}, applied.ActiveModelIDs())
+	assert.Equal(t, QiniuAdmissionRetired, applied.Rejected["qiniu-retired"])
+	assert.Equal(t, QiniuAdmissionRetired, applied.Rejected["modelink-retired"])
+	assert.Equal(t, QiniuAdmissionDisabled, applied.Rejected["openai/gpt-5.2-chat"])
+	require.Len(t, options.Routes, 2)
+	assert.Equal(t, QiniuChannelRoute{ManagedTag: "qiniu-managed", ModelIDs: []string{"qiniu-active"}}, options.Routes[0])
+	assert.Equal(t, QiniuChannelRoute{ManagedTag: "modelink-managed", ModelIDs: []string{"modelink-active"}}, options.Routes[1])
+	assert.Equal(t, 5, summary.Callable)
+	assert.Equal(t, 2, summary.Accepted)
+	assert.Equal(t, 3, summary.Hidden)
 }

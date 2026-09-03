@@ -16,6 +16,7 @@ const (
 	qiniuOpenEndedRange                  = 99999999
 	qiniuBaselineCNYPer1KDeductionTokens = 0.004
 	qiniuMinimumGrossMargin              = 0.05
+	qiniuDisabledGPT52ChatModelID        = "openai/gpt-5.2-chat"
 )
 
 type QiniuResourcePackagePricing struct {
@@ -57,6 +58,7 @@ const (
 	QiniuAdmissionNotCallable     QiniuAdmissionReason = "not_callable"
 	QiniuAdmissionNotOpenAI       QiniuAdmissionReason = "not_openai_compatible"
 	QiniuAdmissionNotTextOutput   QiniuAdmissionReason = "not_text_output"
+	QiniuAdmissionDisabled        QiniuAdmissionReason = "disabled"
 	QiniuAdmissionRetired         QiniuAdmissionReason = "retired"
 	QiniuAdmissionMissingPrice    QiniuAdmissionReason = "missing_price"
 	QiniuAdmissionMissingMetadata QiniuAdmissionReason = "missing_metadata"
@@ -71,9 +73,21 @@ type qiniuValidatedRule struct {
 	cost      string
 }
 
-func AdmitQiniuModel(model QiniuMarketplaceModel, callable map[string]struct{}, _ time.Time, pricing QiniuResourcePackagePricing) (string, QiniuAdmissionReason, error) {
+func AdmitQiniuModel(model QiniuMarketplaceModel, callable map[string]struct{}, now time.Time, pricing QiniuResourcePackagePricing) (string, QiniuAdmissionReason, error) {
 	if _, ok := callable[model.ModelID]; !ok {
 		return "", QiniuAdmissionNotCallable, nil
+	}
+	if model.ModelID == qiniuDisabledGPT52ChatModelID {
+		return "", QiniuAdmissionDisabled, nil
+	}
+	if strings.TrimSpace(model.RetirementAt) != "" {
+		retirementAt, err := parseQiniuRetirementAt(model.RetirementAt)
+		if err != nil {
+			return "", QiniuAdmissionMissingMetadata, nil
+		}
+		if !retirementAt.After(now) {
+			return "", QiniuAdmissionRetired, nil
+		}
 	}
 	if !containsFold(model.Protocols, "openai") {
 		return "", QiniuAdmissionNotOpenAI, nil
