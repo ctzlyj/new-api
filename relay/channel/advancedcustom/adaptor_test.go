@@ -464,6 +464,78 @@ func TestAdaptorConvertsResponsesRequestToOpenAIChatUpstream(t *testing.T) {
 	assert.Equal(t, "/v1/chat/completions", parsedURL.Path)
 }
 
+func TestAdaptorBridgesCodexCustomToolLoopThroughOpenAIChat(t *testing.T) {
+	adaptor := &Adaptor{}
+	info := advancedCustomRelayInfo(&dto.AdvancedCustomConfig{
+		Routes: []dto.AdvancedCustomRoute{
+			{
+				IncomingPath: "/v1/responses",
+				UpstreamPath: "/v1/chat/completions",
+				Converter:    relayconvert.ConverterOpenAIResponsesToOpenAIChat,
+			},
+		},
+	})
+	info.RelayFormat = types.RelayFormatOpenAIResponses
+	info.RelayMode = relayconstant.RelayModeResponses
+	info.RequestURLPath = "/v1/responses"
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	converted, err := adaptor.ConvertOpenAIResponsesRequest(c, info, dto.OpenAIResponsesRequest{
+		Model: "gpt-test",
+		Input: mustAdvancedCustomRawMessage(t, "update the file"),
+		Tools: mustAdvancedCustomRawMessage(t, []map[string]any{
+			{
+				"type":        "custom",
+				"name":        "apply_patch",
+				"description": "Apply a patch",
+			},
+		}),
+	})
+	require.NoError(t, err)
+	chatReq, ok := converted.(*dto.GeneralOpenAIRequest)
+	require.True(t, ok)
+	require.Len(t, chatReq.Tools, 1)
+	assert.Equal(t, "function", chatReq.Tools[0].Type)
+	assert.Equal(t, "apply_patch", chatReq.Tools[0].Function.Name)
+
+	toolCalls, err := common.Marshal([]dto.ToolCallRequest{
+		{
+			ID:   "call_1",
+			Type: "function",
+			Function: dto.FunctionRequest{
+				Name:      "apply_patch",
+				Arguments: `{"input":"patch body"}`,
+			},
+		},
+	})
+	require.NoError(t, err)
+	upstreamBody, err := common.Marshal(dto.OpenAITextResponse{
+		Id:    "chatcmpl_1",
+		Model: "gpt-test",
+		Choices: []dto.OpenAITextResponseChoice{
+			{
+				Message:      dto.Message{Role: "assistant", ToolCalls: toolCalls},
+				FinishReason: "tool_calls",
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	_, newAPIError := adaptor.DoResponse(c, &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(bytes.NewReader(upstreamBody)),
+	}, info)
+	require.Nil(t, newAPIError)
+	assert.Contains(t, recorder.Body.String(), `"type":"custom_tool_call"`)
+	assert.Contains(t, recorder.Body.String(), `"name":"apply_patch"`)
+	assert.Contains(t, recorder.Body.String(), `"input":"patch body"`)
+	assert.NotContains(t, recorder.Body.String(), `"arguments"`)
+}
+
 func TestAdaptorSelectsDuplicateResponsesRoutesByModel(t *testing.T) {
 	config := &dto.AdvancedCustomConfig{
 		Routes: []dto.AdvancedCustomRoute{

@@ -80,8 +80,8 @@ func StreamResponseGeminiChat2OpenAI(geminiResponse *dto.GeminiChatResponse) (*d
 	return geminichat.StreamResponseGeminiChat2OpenAI(geminiResponse)
 }
 
-func ChatCompletionsResponseToResponsesResponse(resp *dto.OpenAITextResponse, id string) (*dto.OpenAIResponsesResponse, *dto.Usage, error) {
-	return oaichat.ChatCompletionsResponseToResponsesResponse(resp, id)
+func ChatCompletionsResponseToResponsesResponse(resp *dto.OpenAITextResponse, id string, meta ...convmeta.Meta) (*dto.OpenAIResponsesResponse, *dto.Usage, error) {
+	return oaichat.ChatCompletionsResponseToResponsesResponse(resp, id, meta...)
 }
 
 func ResponsesStatusFromChatFinishReason(finishReason string) (string, *dto.IncompleteDetails) {
@@ -92,8 +92,8 @@ func UsageFromChatUsage(src *dto.Usage) *dto.Usage {
 	return oaichat.UsageFromChatUsage(src)
 }
 
-func NewChatToResponsesStreamState(id string, model string) *ChatToResponsesStreamState {
-	return oaichat.NewChatToResponsesStreamState(id, model)
+func NewChatToResponsesStreamState(id string, model string, customToolNames ...string) *ChatToResponsesStreamState {
+	return oaichat.NewChatToResponsesStreamState(id, model, customToolNames...)
 }
 
 func ChatCompletionsStreamChunkToResponsesEvents(chunk *dto.ChatCompletionsStreamResponse, state *ChatToResponsesStreamState) ([]ChatToResponsesStreamEvent, error) {

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/relayconvert/convmeta"
 	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
 )
 
@@ -24,7 +25,7 @@ const (
 	ResponsesInputTypeCustomToolOutput   = responsesInputTypeCustomToolOutput
 )
 
-func ResponsesRequestToChatCompletionsRequest(req *dto.OpenAIResponsesRequest) (*dto.GeneralOpenAIRequest, error) {
+func ResponsesRequestToChatCompletionsRequest(req *dto.OpenAIResponsesRequest, meta ...convmeta.Meta) (*dto.GeneralOpenAIRequest, error) {
 	if req == nil {
 		return nil, errors.New("request is nil")
 	}
@@ -35,12 +36,13 @@ func ResponsesRequestToChatCompletionsRequest(req *dto.OpenAIResponsesRequest) (
 		return nil, err
 	}
 
-	messages, err := responsesRequestMessagesToChat(req)
+	info := firstMeta(meta)
+	messages, err := responsesRequestMessagesToChat(req, info)
 	if err != nil {
 		return nil, err
 	}
 
-	tools, err := responsesRequestToolsToChat(req.Tools)
+	tools, err := responsesRequestToolsToChat(req.Tools, info)
 	if err != nil {
 		return nil, err
 	}
@@ -131,7 +133,7 @@ func ValidateRequestChatUnsupportedFields(req *dto.OpenAIResponsesRequest) error
 	return validateResponsesRequestChatUnsupportedFields(req)
 }
 
-func responsesRequestMessagesToChat(req *dto.OpenAIResponsesRequest) ([]dto.Message, error) {
+func responsesRequestMessagesToChat(req *dto.OpenAIResponsesRequest, info convmeta.Meta) ([]dto.Message, error) {
 	messages := make([]dto.Message, 0)
 	if rawJSONPresent(req.Instructions) {
 		instructions, err := responsesJSONString(req.Instructions)
@@ -161,7 +163,7 @@ func responsesRequestMessagesToChat(req *dto.OpenAIResponsesRequest) ([]dto.Mess
 			return nil, fmt.Errorf("invalid input array: %w", err)
 		}
 		for _, item := range items {
-			nextMessages, err := responsesInputItemToChatMessages(item, messages)
+			nextMessages, err := responsesInputItemToChatMessages(item, messages, info)
 			if err != nil {
 				return nil, err
 			}
@@ -173,7 +175,7 @@ func responsesRequestMessagesToChat(req *dto.OpenAIResponsesRequest) ([]dto.Mess
 	}
 }
 
-func responsesInputItemToChatMessages(item map[string]any, messages []dto.Message) ([]dto.Message, error) {
+func responsesInputItemToChatMessages(item map[string]any, messages []dto.Message, info convmeta.Meta) ([]dto.Message, error) {
 	itemType := strings.TrimSpace(kitutil.Interface2String(item["type"]))
 	switch itemType {
 	case responsesInputTypeFunctionCall:
@@ -187,8 +189,9 @@ func responsesInputItemToChatMessages(item map[string]any, messages []dto.Messag
 		if err != nil {
 			return nil, err
 		}
+		convmeta.OptionsOf(info).RegisterResponsesCustomTool(toolCall.Function.Name)
 		return appendToolCallToLastAssistant(messages, toolCall), nil
-	case responsesInputTypeFunctionCallOutput:
+	case responsesInputTypeFunctionCallOutput, responsesInputTypeCustomToolOutput:
 		callID := strings.TrimSpace(kitutil.Interface2String(item["call_id"]))
 		content := responseToolOutputToChatContent(item["output"])
 		return append(messages, dto.Message{Role: "tool", ToolCallId: callID, Content: content}), nil
@@ -300,17 +303,16 @@ func responsesFunctionCallItemToChatToolCall(item map[string]any) (dto.ToolCallR
 }
 
 func responsesCustomToolCallItemToChatToolCall(item map[string]any) (dto.ToolCallRequest, error) {
-	raw, err := kitutil.Marshal(item)
-	if err != nil {
-		return dto.ToolCallRequest{}, err
+	name := strings.TrimSpace(kitutil.Interface2String(item["name"]))
+	if name == "" {
+		return dto.ToolCallRequest{}, errors.New("custom_tool_call item is missing name")
 	}
 	return dto.ToolCallRequest{
-		ID:     responsesCallID(item),
-		Type:   dto.CustomType,
-		Custom: raw,
+		ID:   responsesCallID(item),
+		Type: "function",
 		Function: dto.FunctionRequest{
-			Name:      strings.TrimSpace(kitutil.Interface2String(item["name"])),
-			Arguments: responsesArgumentsString(item["input"]),
+			Name:      name,
+			Arguments: customToolInputArguments(item["input"]),
 		},
 	}, nil
 }
@@ -328,7 +330,7 @@ func appendToolCallToLastAssistant(messages []dto.Message, toolCall dto.ToolCall
 	return messages
 }
 
-func responsesRequestToolsToChat(raw json.RawMessage) ([]dto.ToolCallRequest, error) {
+func responsesRequestToolsToChat(raw json.RawMessage, info convmeta.Meta) ([]dto.ToolCallRequest, error) {
 	if !rawJSONPresent(raw) {
 		return nil, nil
 	}
@@ -348,6 +350,29 @@ func responsesRequestToolsToChat(raw json.RawMessage) ([]dto.ToolCallRequest, er
 					Name:        strings.TrimSpace(kitutil.Interface2String(tool["name"])),
 					Description: kitutil.Interface2String(tool["description"]),
 					Parameters:  tool["parameters"],
+				},
+			})
+			continue
+		}
+		if toolType == dto.CustomType {
+			name := strings.TrimSpace(kitutil.Interface2String(tool["name"]))
+			if name == "" {
+				return nil, errors.New("custom tool is missing name")
+			}
+			convmeta.OptionsOf(info).RegisterResponsesCustomTool(name)
+			out = append(out, dto.ToolCallRequest{
+				Type: "function",
+				Function: dto.FunctionRequest{
+					Name:        name,
+					Description: kitutil.Interface2String(tool["description"]),
+					Parameters: map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"input": map[string]any{"type": "string"},
+						},
+						"required":             []string{"input"},
+						"additionalProperties": false,
+					},
 				},
 			})
 			continue
@@ -392,7 +417,33 @@ func responsesRequestToolChoiceToChat(raw json.RawMessage) (any, error) {
 			}, nil
 		}
 	}
+	if kitutil.Interface2String(choice["type"]) == dto.CustomType {
+		name := strings.TrimSpace(kitutil.Interface2String(choice["name"]))
+		if name != "" {
+			return map[string]any{
+				"type": "function",
+				"function": map[string]any{
+					"name": name,
+				},
+			}, nil
+		}
+	}
 	return choice, nil
+}
+
+func firstMeta(meta []convmeta.Meta) convmeta.Meta {
+	if len(meta) == 0 {
+		return nil
+	}
+	return meta[0]
+}
+
+func customToolInputArguments(value any) string {
+	raw, err := kitutil.Marshal(map[string]any{"input": responseToolOutputToChatContent(value)})
+	if err != nil {
+		return `{"input":""}`
+	}
+	return string(raw)
 }
 
 func RequestToolChoiceToChat(raw json.RawMessage) (any, error) {

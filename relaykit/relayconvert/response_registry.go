@@ -74,6 +74,7 @@ type ResponseStreamOptions struct {
 	Model        string
 	Created      int64
 	IncludeUsage bool
+	CustomTools  []string
 }
 
 type ResponseStreamState struct {
@@ -792,7 +793,7 @@ func usageFromClaudeResponse(resp *dto.ClaudeResponse) *dto.Usage {
 	return nil
 }
 
-func convertOAIChatResponseToOAIResponses(_ context.Context, _ convmeta.Meta, response any) (any, *dto.Usage, error) {
+func convertOAIChatResponseToOAIResponses(_ context.Context, info convmeta.Meta, response any) (any, *dto.Usage, error) {
 	chatResponse, err := asOAIChatResponse(response)
 	if err != nil {
 		return nil, nil, err
@@ -801,7 +802,7 @@ func convertOAIChatResponseToOAIResponses(_ context.Context, _ convmeta.Meta, re
 	if id == "" {
 		id = fmt.Sprintf("resp_%s", kitutil.GetUUID())
 	}
-	return ChatCompletionsResponseToResponsesResponse(chatResponse, id)
+	return ChatCompletionsResponseToResponsesResponse(chatResponse, id, info)
 }
 
 func convertOAIResponsesResponseToOAIChat(_ context.Context, _ convmeta.Meta, response any) (any, *dto.Usage, error) {
@@ -821,7 +822,7 @@ func newOAIChatToOAIResponsesStreamState(options ResponseStreamOptions) any {
 	if id == "" {
 		id = fmt.Sprintf("resp_%s", kitutil.GetUUID())
 	}
-	state := NewChatToResponsesStreamState(id, strings.TrimSpace(options.Model))
+	state := NewChatToResponsesStreamState(id, strings.TrimSpace(options.Model), options.CustomTools...)
 	if options.Created != 0 {
 		state.Created = options.Created
 	}

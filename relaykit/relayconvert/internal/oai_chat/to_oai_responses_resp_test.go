@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/relayconvert/convmeta"
 	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -39,6 +40,31 @@ func TestChatCompletionsResponseToResponsesPreservesTextToolCallsAndUsage(t *tes
 	assert.Equal(t, "call_1", resp.Output[1].CallId)
 	assert.Equal(t, "lookup", resp.Output[1].Name)
 	assert.Equal(t, `"{\"q\":\"x\"}"`, string(resp.Output[1].Arguments))
+}
+
+func TestChatCompletionsResponseToResponsesRestoresCustomTool(t *testing.T) {
+	options := &convmeta.Options{}
+	options.RegisterResponsesCustomTool("apply_patch")
+	meta := &convmeta.Values{Options: options}
+	chat := &dto.OpenAITextResponse{
+		Id:    "chatcmpl_1",
+		Model: "gpt-test",
+		Choices: []dto.OpenAITextResponseChoice{
+			{
+				Message:      assistantMessageWithTool("", "call_1", "apply_patch", `{"input":"*** Begin Patch\n*** End Patch"}`),
+				FinishReason: "tool_calls",
+			},
+		},
+	}
+
+	resp, _, err := ChatCompletionsResponseToResponsesResponse(chat, "resp_1", meta)
+	require.NoError(t, err)
+	require.Len(t, resp.Output, 1)
+	assert.Equal(t, responsesOutputTypeCustomToolCall, resp.Output[0].Type)
+	assert.Equal(t, "call_1", resp.Output[0].CallId)
+	assert.Equal(t, "apply_patch", resp.Output[0].Name)
+	assert.Equal(t, "*** Begin Patch\n*** End Patch", resp.Output[0].Input)
+	assert.Empty(t, resp.Output[0].Arguments)
 }
 
 func TestChatCompletionsResponseToResponsesMapsIncompleteFinishReasons(t *testing.T) {
@@ -130,6 +156,77 @@ func TestChatCompletionsStreamToResponsesEventsAggregatesUsageAndToolArgs(t *tes
 	require.Len(t, events[9].Payload.Response.Output, 2)
 	assert.Equal(t, "hello", events[9].Payload.Response.Output[0].Content[0].Text)
 	assert.Equal(t, `"{\"q\":\"x\"}"`, string(events[9].Payload.Response.Output[1].Arguments))
+}
+
+func TestChatCompletionsStreamToResponsesEventsRestoresCustomTool(t *testing.T) {
+	state := NewChatToResponsesStreamState("resp_1", "gpt-test", "apply_patch")
+	toolIndex := 0
+
+	var events []ChatToResponsesStreamEvent
+	events = append(events, mustResponsesEventsFromChatChunk(t, state, &dto.ChatCompletionsStreamResponse{
+		Choices: []dto.ChatCompletionsStreamResponseChoice{
+			{Index: 0, Delta: dto.ChatCompletionsStreamResponseChoiceDelta{ToolCalls: []dto.ToolCallResponse{
+				{Index: &toolIndex, ID: "call_1", Type: "function", Function: dto.FunctionResponse{Name: "apply_patch"}},
+			}}},
+		},
+	})...)
+	events = append(events, mustResponsesEventsFromChatChunk(t, state, &dto.ChatCompletionsStreamResponse{
+		Choices: []dto.ChatCompletionsStreamResponseChoice{
+			{Index: 0, Delta: dto.ChatCompletionsStreamResponseChoiceDelta{ToolCalls: []dto.ToolCallResponse{
+				{Index: &toolIndex, Function: dto.FunctionResponse{Arguments: `{"input":"patch body"}`}},
+			}}},
+		},
+	})...)
+	finishReason := "tool_calls"
+	events = append(events, mustResponsesEventsFromChatChunk(t, state, &dto.ChatCompletionsStreamResponse{
+		Choices: []dto.ChatCompletionsStreamResponseChoice{{Index: 0, FinishReason: &finishReason}},
+	})...)
+	events = append(events, FinalizeChatCompletionsStreamToResponses(state)...)
+
+	require.Len(t, events, 6)
+	assert.Equal(t, responsesEventCreated, events[0].Type)
+	assert.Equal(t, responsesEventOutputItemAdded, events[1].Type)
+	require.NotNil(t, events[1].Payload.Item)
+	assert.Equal(t, responsesOutputTypeCustomToolCall, events[1].Payload.Item.Type)
+	assert.Equal(t, responsesEventCustomToolInputDelta, events[2].Type)
+	assert.Equal(t, "patch body", events[2].Payload.Delta)
+	assert.Equal(t, responsesEventCustomToolInputDone, events[3].Type)
+	assert.Equal(t, "patch body", events[3].Payload.Input)
+	assert.Equal(t, responsesEventOutputItemDone, events[4].Type)
+	require.NotNil(t, events[4].Payload.Item)
+	assert.Equal(t, "patch body", events[4].Payload.Item.Input)
+	assert.Equal(t, responsesEventCompleted, events[5].Type)
+	require.NotNil(t, events[5].Payload.Response)
+	require.Len(t, events[5].Payload.Response.Output, 1)
+	assert.Equal(t, responsesOutputTypeCustomToolCall, events[5].Payload.Response.Output[0].Type)
+	assert.Equal(t, "patch body", events[5].Payload.Response.Output[0].Input)
+}
+
+func TestChatCompletionsStreamToResponsesDefersArgumentsUntilToolName(t *testing.T) {
+	state := NewChatToResponsesStreamState("resp_1", "gpt-test")
+	toolIndex := 0
+
+	first := mustResponsesEventsFromChatChunk(t, state, &dto.ChatCompletionsStreamResponse{
+		Choices: []dto.ChatCompletionsStreamResponseChoice{
+			{Index: 0, Delta: dto.ChatCompletionsStreamResponseChoiceDelta{ToolCalls: []dto.ToolCallResponse{
+				{Index: &toolIndex, ID: "call_1", Type: "function", Function: dto.FunctionResponse{Arguments: "{\"q\":\"x\"}"}},
+			}}},
+		},
+	})
+	require.Len(t, first, 1)
+	assert.Equal(t, responsesEventCreated, first[0].Type)
+
+	second := mustResponsesEventsFromChatChunk(t, state, &dto.ChatCompletionsStreamResponse{
+		Choices: []dto.ChatCompletionsStreamResponseChoice{
+			{Index: 0, Delta: dto.ChatCompletionsStreamResponseChoiceDelta{ToolCalls: []dto.ToolCallResponse{
+				{Index: &toolIndex, Function: dto.FunctionResponse{Name: "lookup"}},
+			}}},
+		},
+	})
+	require.Len(t, second, 2)
+	assert.Equal(t, responsesEventOutputItemAdded, second[0].Type)
+	assert.Equal(t, responsesEventFunctionArgsDelta, second[1].Type)
+	assert.Equal(t, "{\"q\":\"x\"}", second[1].Payload.Delta)
 }
 
 func mustResponsesEventsFromChatChunk(t *testing.T, state *ChatToResponsesStreamState, chunk *dto.ChatCompletionsStreamResponse) []ChatToResponsesStreamEvent {

@@ -1,5 +1,10 @@
 package convmeta
 
+import (
+	"strings"
+	"sync"
+)
+
 // Options is the per-request snapshot of host configuration that converters
 // consult. The host fills it from its settings system when constructing the
 // Meta (see relaycommon.RelayInfo.ConvOptions); relaykit users fill it
@@ -7,6 +12,9 @@ package convmeta
 type Options struct {
 	Claude ClaudeOptions
 	Gemini GeminiOptions
+
+	responsesCustomToolsMu sync.RWMutex
+	responsesCustomTools   map[string]struct{}
 
 	// OpenRouterDialect marks the upstream as OpenRouter's OpenAI-compatible
 	// surface, which accepts extra fields (reasoning config, cache_control on
@@ -18,6 +26,49 @@ type Options struct {
 	// suffix must be kept on the outgoing model name (host blacklist lookup).
 	// Nil means "never preserve".
 	PreserveThinkingSuffix func(modelName string) bool
+}
+
+func (o *Options) RegisterResponsesCustomTool(name string) {
+	if o == nil {
+		return
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+	o.responsesCustomToolsMu.Lock()
+	defer o.responsesCustomToolsMu.Unlock()
+	if o.responsesCustomTools == nil {
+		o.responsesCustomTools = make(map[string]struct{})
+	}
+	o.responsesCustomTools[name] = struct{}{}
+}
+
+func (o *Options) IsResponsesCustomTool(name string) bool {
+	if o == nil {
+		return false
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	o.responsesCustomToolsMu.RLock()
+	defer o.responsesCustomToolsMu.RUnlock()
+	_, ok := o.responsesCustomTools[name]
+	return ok
+}
+
+func (o *Options) ResponsesCustomToolNames() []string {
+	if o == nil {
+		return nil
+	}
+	o.responsesCustomToolsMu.RLock()
+	defer o.responsesCustomToolsMu.RUnlock()
+	names := make([]string, 0, len(o.responsesCustomTools))
+	for name := range o.responsesCustomTools {
+		names = append(names, name)
+	}
+	return names
 }
 
 type ClaudeOptions struct {
